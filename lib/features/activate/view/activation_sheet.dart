@@ -1,12 +1,14 @@
 // lib/features/activation/ui/activation_sheet.dart
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
 
 // Update these imports to match your project structure
 import '../../../common/widgets/qr_scanner_page.dart';
@@ -66,7 +68,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
   bool _connecting = false;
   bool _sent = false;
 
-  // Activate ctrls (Key removed; Serial stays)
+  // Activate ctrls
   final _sealCtrl = TextEditingController();
   final _serialCtrl = TextEditingController();
 
@@ -91,6 +93,11 @@ class _ActivationSheetState extends State<_ActivationSheet>
   String? _privKeyBase64; // what we send to board
   bool _loadingKeys = false;
   String? _keysError;
+
+  // CFG save/read state
+  bool _savingCfg = false;
+  String? _savedCfgPath;
+  Map<String, dynamic>? _savedCfgReloaded;
 
   @override
   void initState() {
@@ -240,29 +247,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
       return;
     }
 
-    final payload = {
-      "type": "config",
-      "activate": {
-        // Key removed from UI; firmware expects "key" → use serialNumber as key
-        "key": widget.data.serialNumber,
-        "sealCode": widget.data.sealCode,
-      },
-      "place": {
-        "project": widget.data.project,
-        "location": widget.data.place,
-      },
-      "connect": {
-        "deviceId": widget.data.deviceId,
-      },
-      "config": {
-        "baseUrl": widget.data.baseUrl,
-        "privateKeyBase64": _privKeyBase64, // from API, no PEM headers
-        "serialNumber": widget.data.serialNumber,
-        "inputEnable": widget.data.inputEnable,
-        "outputEnable": widget.data.outputEnable,
-        "boardRole": widget.data.boardRole, // consumer | producer
-      }
-    };
+    final payload = _buildSendPayload();
 
     try {
       await widget.service.sendConfig(
@@ -279,6 +264,109 @@ class _ActivationSheetState extends State<_ActivationSheet>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Send failed: $e')),
       );
+    }
+  }
+
+  Map<String, dynamic> _buildSendPayload() => {
+        "type": "config",
+        "activate": {
+          "key": widget.data.serialNumber, // key == serial
+          "sealCode": widget.data.sealCode,
+        },
+        "place": {
+          "project": widget.data.project,
+          "location": widget.data.place,
+        },
+        "connect": {
+          "deviceId": widget.data.deviceId,
+        },
+        "config": {
+          "baseUrl": widget.data.baseUrl,
+          "privateKeyBase64": _privKeyBase64, // from API, no PEM headers
+          "serialNumber": widget.data.serialNumber,
+          "inputEnable": widget.data.inputEnable,
+          "outputEnable": widget.data.outputEnable,
+          "boardRole": widget.data.boardRole, // consumer | producer
+        }
+      };
+
+  // -------------------- CFG Save / Read --------------------
+
+  Map<String, dynamic> _buildCfgJson() => {
+        // Save a richer file (can be used later to restore UI or re-send)
+        "activate": {
+          "key": widget.data.serialNumber,
+          "sealCode": widget.data.sealCode,
+        },
+        "place": {
+          "project": widget.data.project,
+          "location": widget.data.place,
+        },
+        "connect": {"deviceId": widget.data.deviceId},
+        "config": {
+          "baseUrl": widget.data.baseUrl,
+          "privateKeyBase64": _privKeyBase64,
+          "serialNumber": widget.data.serialNumber,
+          "inputEnable": widget.data.inputEnable,
+          "outputEnable": widget.data.outputEnable,
+          "boardRole": widget.data.boardRole,
+        },
+        // Optional: keep PEMs for audit/backup
+        "keys": {
+          if (_pubKeyPem != null) "publicPem": _pubKeyPem,
+          if (_privKeyPem != null) "privatePem": _privKeyPem,
+        },
+        "meta": {
+          "savedAt": DateTime.now().toIso8601String(),
+          "app": "YourAppName",
+        }
+      };
+
+  Future<void> _saveCfgToFile() async {
+    _collectForm();
+
+    if (_privKeyBase64 == null || _privKeyBase64!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Private key is empty. Fetch keys first.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _savingCfg = true;
+      _savedCfgPath = null;
+      _savedCfgReloaded = null;
+    });
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final name = (widget.data.serialNumber.isNotEmpty)
+          ? 'board_cfg_${widget.data.serialNumber}.json'
+          : 'board_cfg_${DateTime.now().millisecondsSinceEpoch}.json';
+      final file = File('${dir.path}/$name');
+
+      final pretty = const JsonEncoder.withIndent('  ').convert(_buildCfgJson());
+      await file.writeAsString(pretty, flush: true);
+
+      // Read-back to verify
+      final txt = await file.readAsString();
+      final decoded = jsonDecode(txt) as Map<String, dynamic>;
+
+      if (!mounted) return;
+      setState(() {
+        _savedCfgPath = file.path;
+        _savedCfgReloaded = decoded;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('CFG saved & reloaded ✓\n${file.path}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Save/read CFG failed: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _savingCfg = false);
     }
   }
 
@@ -324,7 +412,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
     return Padding(
       padding: EdgeInsets.only(bottom: pad),
       child: SizedBox(
-        height: MediaQuery.of(context).size.height * 0.88,
+        height: MediaQuery.of(context).size.height * 0.9,
         child: Column(
           children: [
             const SizedBox(height: 8),
@@ -399,7 +487,6 @@ class _ActivationSheetState extends State<_ActivationSheet>
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Key removed. Serial stays (used as "key" too).
         TextField(
           controller: _serialCtrl,
           decoration: InputDecoration(
@@ -558,7 +645,10 @@ class _ActivationSheetState extends State<_ActivationSheet>
         _kv('InputEnable', _inEnable.toString()),
         _kv('OutputEnable', _outEnable.toString()),
         const SizedBox(height: 12),
-        Row(
+
+        Wrap(
+          spacing: 12,
+          runSpacing: 8,
           children: [
             FilledButton.icon(
               onPressed: _loadingKeys ? null : _maybeFetchKeys,
@@ -568,7 +658,6 @@ class _ActivationSheetState extends State<_ActivationSheet>
                   : const Icon(Icons.key),
               label: Text(_loadingKeys ? 'Fetching...' : 'Get RSA Keys'),
             ),
-            const SizedBox(width: 12),
             if (_privKeyBase64 != null)
               OutlinedButton.icon(
                 onPressed: () {
@@ -580,13 +669,23 @@ class _ActivationSheetState extends State<_ActivationSheet>
                 icon: const Icon(Icons.copy),
                 label: const Text('Copy Private (base64)'),
               ),
+            FilledButton.icon(
+              onPressed: _savingCfg ? null : _saveCfgToFile,
+              icon: _savingCfg
+                  ? const SizedBox(
+                      width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.save_alt),
+              label: Text(_savingCfg ? 'Saving...' : 'Save & Read CFG'),
+            ),
           ],
         ),
+
         if (_keysError != null) ...[
           const SizedBox(height: 8),
           Text(_keysError!, style: TextStyle(color: theme.colorScheme.error)),
         ],
         const SizedBox(height: 16),
+
         if (_pubKeyPem != null || _privKeyPem != null)
           Text('Keys from API', style: theme.textTheme.titleMedium),
         if (_pubKeyPem != null) ...[
@@ -604,16 +703,28 @@ class _ActivationSheetState extends State<_ActivationSheet>
           Text('Private Key (base64, no headers)', style: theme.textTheme.labelLarge),
           SelectableText(_privKeyBase64!, style: mono),
         ],
+
+        if (_savedCfgPath != null) ...[
+          const SizedBox(height: 16),
+          Text('Saved CFG Path', style: theme.textTheme.titleMedium),
+          SelectableText(_savedCfgPath!, style: mono),
+        ],
+        if (_savedCfgReloaded != null) ...[
+          const SizedBox(height: 12),
+          Text('Reloaded CFG Preview', style: theme.textTheme.titleMedium),
+          SelectableText(
+            const JsonEncoder.withIndent('  ').convert(_savedCfgReloaded),
+            style: mono,
+          ),
+        ],
+
         const SizedBox(height: 16),
-        Text('Preview payload:', style: theme.textTheme.labelLarge),
+        Text('Preview payload to board:', style: theme.textTheme.labelLarge),
         const SizedBox(height: 6),
         SelectableText(
           const JsonEncoder.withIndent('  ').convert({
             "type": "config",
-            "activate": {
-              "key": "<serialNumber>",
-              "sealCode": "<sealCode>"
-            },
+            "activate": {"key": "<serialNumber>", "sealCode": "<sealCode>"},
             "place": {"project": "<project>", "location": "<location>"},
             "connect": {"deviceId": "<deviceId>"},
             "config": {
