@@ -1,6 +1,7 @@
 // lib/features/activation/data/board_ble_service.dart
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
@@ -35,13 +36,12 @@ class BoardBleService {
       if (update.connectionState == DeviceConnectionState.connected &&
           !completer.isCompleted) {
         try {
-          // small delay helps flaky stacks
+          // Small delay helps some stacks stabilize before discovery.
           await Future<void>.delayed(const Duration(milliseconds: 300));
 
           final services = await _ble.discoverServices(deviceId);
           _servicesCache[deviceId] = services;
 
-          // Log GATT table once on connect (comment out later)
           if (kDebugMode) {
             debugPrint(await gattTable(deviceId));
           }
@@ -49,10 +49,11 @@ class BoardBleService {
           _writeEndpoint[deviceId] = _pickWritableEndpoint(deviceId, services);
 
           try {
+            // iOS ignores this; Android can raise up to 517, but 247 is widely supported.
             final mtu = await _ble.requestMtu(deviceId: deviceId, mtu: 247);
             _mtuCache[deviceId] = mtu;
           } catch (_) {
-            // iOS ignores; some stacks fail -> fine
+            // Ignore; we'll chunk safely.
           }
 
           completer.complete();
@@ -61,7 +62,6 @@ class BoardBleService {
         }
       }
 
-      // Surface connection failures
       if (update.failure != null && !completer.isCompleted) {
         completer.completeError(update.failure!);
       }
@@ -76,6 +76,8 @@ class BoardBleService {
     await _connSub?.cancel();
     _connSub = null;
   }
+
+  // ---------------- Debug helpers ----------------
 
   Future<String> gattTable(String deviceId) async {
     final services =
@@ -95,6 +97,27 @@ class BoardBleService {
     return buf.toString();
   }
 
+  void debugChosenEndpoint(String deviceId) {
+    final ep = _writeEndpoint[deviceId];
+    if (ep == null) {
+      debugPrint('No endpoint chosen yet.');
+      return;
+    }
+    debugPrint(
+      'Write endpoint:\n'
+      '  Service: ${ep.qc.serviceId}\n'
+      '  Char   : ${ep.qc.characteristicId}\n'
+      '  Props  : write=${ep.writeWithResponse} wnr=${ep.writeWithoutResponse}',
+    );
+  }
+
+  Future<void> testWriteSmall(String deviceId) async {
+    final ep = await _ensureWriteEndpoint(deviceId);
+    debugChosenEndpoint(deviceId);
+    await _writeWithFallback(ep, const [0x50, 0x49, 0x4E, 0x47]); // "PING"
+  }
+
+  // Allow manual override if you add a picker UI.
   void overrideWriteCharacteristic({
     required String deviceId,
     required Uuid serviceId,
@@ -113,28 +136,45 @@ class BoardBleService {
     );
   }
 
+  // ---------------- Public API ----------------
+
+  /// Sends a JSON payload to the board (chunked & retried if needed).
   Future<void> sendConfig({
     required String deviceId,
     required Map<String, dynamic> payload,
   }) async {
     final endpoint = await _ensureWriteEndpoint(deviceId);
 
-    final bytes = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
+    // Encode JSON
+    final data = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
+
+    // Compute safe chunk size (iOS ~20 bytes, Android = MTU-3 if known)
     final mtu = _mtuCache[deviceId];
-    final maxChunk = (mtu != null && mtu > 3) ? (mtu - 3) : 20;
+    final maxChunk =
+        Platform.isIOS ? 20 : ((mtu != null && mtu > 3) ? (mtu - 3) : 20);
 
-    if (bytes.length <= maxChunk) {
-      await _write(endpoint, bytes);
-      return;
-    }
-
-    for (final chunk in _chunk(bytes, maxChunk)) {
-      await _write(endpoint, chunk);
-      await Future<void>.delayed(const Duration(milliseconds: 15));
+    // Attempt write; on certain GATT failures (e.g., 133), do ONE reconnect+retry.
+    try {
+      await _writeChunked(endpoint, data, maxChunk: maxChunk);
+    } catch (e) {
+      if (_looksLikeTransientGatt(e)) {
+        // Retry once: disconnect -> wait -> reconnect -> rediscover -> re-pick endpoint -> write again
+        try {
+          await disconnect();
+          await Future<void>.delayed(const Duration(milliseconds: 300));
+          await connect(deviceId);
+          final ep2 = await _ensureWriteEndpoint(deviceId);
+          await _writeChunked(ep2, data, maxChunk: maxChunk);
+          return;
+        } catch (ee) {
+          rethrow; // surface second failure
+        }
+      }
+      rethrow;
     }
   }
 
-  // ---------- internals ----------
+  // ---------------- Internals ----------------
 
   Future<_WriteEndpoint> _ensureWriteEndpoint(String deviceId) async {
     final cached = _writeEndpoint[deviceId];
@@ -152,7 +192,7 @@ class BoardBleService {
     DiscoveredService? chosenSvc;
     DiscoveredCharacteristic? chosenChar;
 
-    // Prefer writeWithoutResponse
+    // Prefer writeWithoutResponse for speed if available…
     for (final s in services) {
       for (final c in s.characteristics) {
         if (c.isWritableWithoutResponse) {
@@ -164,7 +204,7 @@ class BoardBleService {
       if (chosenChar != null) break;
     }
 
-    // Fallback to write-with-response
+    // …otherwise use write-with-response.
     if (chosenChar == null) {
       for (final s in services) {
         for (final c in s.characteristics) {
@@ -181,7 +221,7 @@ class BoardBleService {
     if (chosenSvc == null || chosenChar == null) {
       throw Exception(
         'No writable characteristic found.\n'
-        'Tip: open nRF Connect and verify the device exposes a writable GATT characteristic.',
+        'Tip: verify with nRF Connect that the device exposes a writable characteristic.',
       );
     }
 
@@ -196,29 +236,74 @@ class BoardBleService {
     );
   }
 
-  Future<void> _write(_WriteEndpoint endpoint, List<int> value) async {
+  Future<void> _writeChunked(
+    _WriteEndpoint endpoint,
+    Uint8List data, {
+    required int maxChunk,
+  }) async {
+    if (data.length <= maxChunk) {
+      await _writeWithFallback(endpoint, data);
+      return;
+    }
+    for (int i = 0; i < data.length; i += maxChunk) {
+      final end = (i + maxChunk < data.length) ? i + maxChunk : data.length;
+      final chunk = data.sublist(i, end);
+      await _writeWithFallback(endpoint, chunk);
+      await Future<void>.delayed(const Duration(milliseconds: 15)); // pacing
+    }
+  }
+
+  /// Try WITH RESPONSE first when both are advertised (more compatible),
+  /// fall back to WITHOUT RESPONSE once if the first attempt fails.
+  Future<void> _writeWithFallback(
+    _WriteEndpoint endpoint,
+    List<int> value,
+  ) async {
+    final both = endpoint.writeWithResponse && endpoint.writeWithoutResponse;
+
+    Future<void> wRsp() =>
+        _ble.writeCharacteristicWithResponse(endpoint.qc, value: value);
+    Future<void> wNoRsp() =>
+        _ble.writeCharacteristicWithoutResponse(endpoint.qc, value: value);
+
     try {
-      if (endpoint.writeWithoutResponse) {
-        await _ble.writeCharacteristicWithoutResponse(endpoint.qc, value: value);
-      } else if (endpoint.writeWithResponse) {
-        await _ble.writeCharacteristicWithResponse(endpoint.qc, value: value);
-      } else {
-        throw Exception('Resolved characteristic is not writable.');
+      if (both) {
+        await wRsp();
+        return;
       }
+      if (endpoint.writeWithResponse) {
+        await wRsp();
+        return;
+      }
+      if (endpoint.writeWithoutResponse) {
+        await wNoRsp();
+        return;
+      }
+      throw Exception('Resolved characteristic is not writable.');
     } catch (e) {
-      // Surface GATT errors with context (very helpful when debugging)
-      debugPrint('BLE write failed on ${endpoint.qc.serviceId}/${endpoint.qc.characteristicId}: $e');
+      if (both) {
+        // Try the other mode once
+        try {
+          await wNoRsp();
+          return;
+        } catch (_) {
+          // fall through to rethrow below
+        }
+      }
+      debugPrint(
+        'BLE write failed on ${endpoint.qc.serviceId}/${endpoint.qc.characteristicId}: $e',
+      );
       rethrow;
     }
   }
 
-  List<List<int>> _chunk(Uint8List data, int maxLen) {
-    final out = <List<int>>[];
-    for (int i = 0; i < data.length; i += maxLen) {
-      final end = (i + maxLen < data.length) ? i + maxLen : data.length;
-      out.add(data.sublist(i, end));
-    }
-    return out;
+  bool _looksLikeTransientGatt(Object e) {
+    final msg = e.toString().toLowerCase();
+    // Heuristics: Android "133", generic "gatt" error, or "status" hints.
+    return msg.contains('133') ||
+        msg.contains('gatt') ||
+        msg.contains('status') ||
+        msg.contains('timeout');
   }
 }
 

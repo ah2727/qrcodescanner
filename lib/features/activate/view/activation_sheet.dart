@@ -18,18 +18,18 @@ import '../data/board_ble_service.dart';
 class ActivationData {
   // Tab 1 (Activate)
   String sealCode = '';
-  String serialNumber = ''; // also used as "activate.key"
+  String serialNumber = '';
 
   // Tab 2 (Place)
   String project = '';
   String place = '';
   String baseUrl = '';
+  String connectionType = 'Wifi'; // Wifi | RS485 | LAN
 
   // Tab 3 (Connect)
   String deviceId = '';
   bool inputEnable = false;
   bool outputEnable = false;
-  String boardRole = 'consumer'; // consumer | producer
 }
 
 Future<void> showActivationSheet({
@@ -80,7 +80,6 @@ class _ActivationSheetState extends State<_ActivationSheet>
   // Connect state
   bool _inEnable = false;
   bool _outEnable = false;
-  String _role = 'consumer';
 
   // Projects: project -> list of locations
   Map<String, List<_LocItem>> _projects = {};
@@ -184,7 +183,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
       final m = jsonDecode(res.body) as Map<String, dynamic>;
 
       // Flexible key names handling
-      String? pub = (m['public key'] ?? m['public'] ?? m['publicKey']) as String?;
+      String? pub =
+          (m['public key'] ?? m['public'] ?? m['publicKey']) as String?;
       String? priv =
           (m['private key'] ?? m['private'] ?? m['privateKey']) as String?;
 
@@ -218,14 +218,14 @@ class _ActivationSheetState extends State<_ActivationSheet>
 
       await widget.service.connect(widget.data.deviceId);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Connected to board')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Connected to board')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Connect failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Connect failed: $e')));
     } finally {
       if (mounted) setState(() => _connecting = false);
     }
@@ -236,13 +236,19 @@ class _ActivationSheetState extends State<_ActivationSheet>
 
     if (_privKeyBase64 == null || _privKeyBase64!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Private key not fetched. Tap "Get RSA Keys".')),
+        const SnackBar(
+          content: Text('Private key not fetched. Tap "Get RSA Keys".'),
+        ),
       );
       return;
     }
     if (widget.data.baseUrl.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('BaseURL is empty. Select project/location or type it.')),
+        const SnackBar(
+          content: Text(
+            'BaseURL is empty. Select project/location or type it.',
+          ),
+        ),
       );
       return;
     }
@@ -256,69 +262,43 @@ class _ActivationSheetState extends State<_ActivationSheet>
       );
       if (!mounted) return;
       setState(() => _sent = true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Configuration sent')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Configuration sent')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Send failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Send failed: $e')));
     }
   }
 
   Map<String, dynamic> _buildSendPayload() => {
-        "type": "config",
-        "activate": {
-          "key": widget.data.serialNumber, // key == serial
-          "sealCode": widget.data.sealCode,
-        },
-        "place": {
-          "project": widget.data.project,
-          "location": widget.data.place,
-        },
-        "connect": {
-          "deviceId": widget.data.deviceId,
-        },
-        "config": {
-          "baseUrl": widget.data.baseUrl,
-          "privateKeyBase64": _privKeyBase64, // from API, no PEM headers
-          "serialNumber": widget.data.serialNumber,
-          "inputEnable": widget.data.inputEnable,
-          "outputEnable": widget.data.outputEnable,
-          "boardRole": widget.data.boardRole, // consumer | producer
-        }
+        // EXACT names requested by your firmware:
+        "BaseURL": widget.data.baseUrl,
+        "PrivetKeyBase64": _privKeyBase64, // from API (PEM stripped to base64)
+        "SerialNumber": widget.data.serialNumber,
+        "InputEnable": widget.data.inputEnable,
+        "OutputEnable": widget.data.outputEnable,
+        "ConnectionType": widget.data.connectionType, // Wifi | RS485 | LAN
       };
 
   // -------------------- CFG Save / Read --------------------
 
   Map<String, dynamic> _buildCfgJson() => {
-        // Save a richer file (can be used later to restore UI or re-send)
-        "activate": {
-          "key": widget.data.serialNumber,
-          "sealCode": widget.data.sealCode,
-        },
-        "place": {
-          "project": widget.data.project,
-          "location": widget.data.place,
-        },
-        "connect": {"deviceId": widget.data.deviceId},
-        "config": {
-          "baseUrl": widget.data.baseUrl,
-          "privateKeyBase64": _privKeyBase64,
-          "serialNumber": widget.data.serialNumber,
-          "inputEnable": widget.data.inputEnable,
-          "outputEnable": widget.data.outputEnable,
-          "boardRole": widget.data.boardRole,
-        },
-        // Optional: keep PEMs for audit/backup
-        "keys": {
-          if (_pubKeyPem != null) "publicPem": _pubKeyPem,
-          if (_privKeyPem != null) "privatePem": _privKeyPem,
-        },
+        // Minimal cfg mirrors the device payload (plus optional meta)
+        "BaseURL": widget.data.baseUrl,
+        "PrivetKeyBase64": _privKeyBase64,
+        "SerialNumber": widget.data.serialNumber,
+        "InputEnable": widget.data.inputEnable,
+        "OutputEnable": widget.data.outputEnable,
+        "ConnectionType": widget.data.connectionType,
         "meta": {
           "savedAt": DateTime.now().toIso8601String(),
-          "app": "YourAppName",
+          // Optional context, not used by device:
+          "project": widget.data.project,
+          "place": widget.data.place,
+          "sealCode": widget.data.sealCode,
         }
       };
 
@@ -327,7 +307,9 @@ class _ActivationSheetState extends State<_ActivationSheet>
 
     if (_privKeyBase64 == null || _privKeyBase64!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Private key is empty. Fetch keys first.')),
+        const SnackBar(
+          content: Text('Private key is empty. Fetch keys first.'),
+        ),
       );
       return;
     }
@@ -345,7 +327,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
           : 'board_cfg_${DateTime.now().millisecondsSinceEpoch}.json';
       final file = File('${dir.path}/$name');
 
-      final pretty = const JsonEncoder.withIndent('  ').convert(_buildCfgJson());
+      final pretty =
+          const JsonEncoder.withIndent('  ').convert(_buildCfgJson());
       await file.writeAsString(pretty, flush: true);
 
       // Read-back to verify
@@ -362,9 +345,9 @@ class _ActivationSheetState extends State<_ActivationSheet>
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Save/read CFG failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Save/read CFG failed: $e')));
     } finally {
       if (mounted) setState(() => _savingCfg = false);
     }
@@ -380,8 +363,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
       ..place = _selectedLocation ?? ''
       ..baseUrl = _baseUrlCtrl.text.trim()
       ..inputEnable = _inEnable
-      ..outputEnable = _outEnable
-      ..boardRole = _role;
+      ..outputEnable = _outEnable;
+    // connectionType is updated directly in the dropdown's onChanged
   }
 
   Future<void> _scanTo(TextEditingController controller, String title) async {
@@ -419,7 +402,10 @@ class _ActivationSheetState extends State<_ActivationSheet>
             Row(
               children: [
                 const SizedBox(width: 16),
-                Text('Activate Board', style: Theme.of(context).textTheme.titleLarge),
+                Text(
+                  'Activate Board',
+                  style: Theme.of(context).textTheme.titleLarge!,
+                ),
                 const Spacer(),
                 IconButton(
                   icon: const Icon(Icons.close),
@@ -468,9 +454,13 @@ class _ActivationSheetState extends State<_ActivationSheet>
                         _sendConfig();
                       }
                     },
-                    child: Text(_tabs.index < 3
-                        ? 'Continue'
-                        : _sent ? 'Sent' : 'Send To Board'),
+                    child: Text(
+                      _tabs.index < 3
+                          ? 'Continue'
+                          : _sent
+                              ? 'Sent'
+                              : 'Send To Board',
+                    ),
                   ),
                 ],
               ),
@@ -490,7 +480,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
         TextField(
           controller: _serialCtrl,
           decoration: InputDecoration(
-            labelText: 'Serial Number (also used as Key)',
+            labelText: 'Serial Number',
             suffixIcon: IconButton(
               icon: const Icon(Icons.qr_code_scanner),
               onPressed: () => _scanTo(_serialCtrl, 'Scan Serial QR'),
@@ -501,7 +491,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
         TextField(
           controller: _sealCtrl,
           decoration: InputDecoration(
-            labelText: 'Seal Code',
+            labelText: 'Seal Code (not sent to device)',
             suffixIcon: IconButton(
               icon: const Icon(Icons.qr_code_scanner),
               onPressed: () => _scanTo(_sealCtrl, 'Scan Seal QR'),
@@ -528,7 +518,10 @@ class _ActivationSheetState extends State<_ActivationSheet>
               onPressed: _loadingProjects ? null : _fetchProjects,
               icon: _loadingProjects
                   ? const SizedBox(
-                      width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
                   : const Icon(Icons.refresh),
             ),
           ],
@@ -543,9 +536,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
         ],
         DropdownButtonFormField<String>(
           value: _selectedProject,
-          items: projects
-              .map((p) => DropdownMenuItem(value: p, child: Text(p)))
-              .toList(),
+          items:
+              projects.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
           onChanged: (v) {
             setState(() {
               _selectedProject = v;
@@ -597,20 +589,25 @@ class _ActivationSheetState extends State<_ActivationSheet>
         FilledButton.icon(
           icon: _connecting
               ? const SizedBox(
-                  width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
               : const Icon(Icons.link),
           label: Text(_connecting ? 'Connecting...' : 'Connect'),
           onPressed: _connecting ? null : _connect,
         ),
         const Divider(height: 32),
         DropdownButtonFormField<String>(
-          value: _role,
+          value: widget.data.connectionType,
           items: const [
-            DropdownMenuItem(value: 'consumer', child: Text('Consumer')),
-            DropdownMenuItem(value: 'producer', child: Text('Producer')),
+            DropdownMenuItem(value: 'Wifi', child: Text('Wifi')),
+            DropdownMenuItem(value: 'RS485', child: Text('RS485')),
+            DropdownMenuItem(value: 'LAN', child: Text('LAN')),
           ],
-          onChanged: (v) => setState(() => _role = v ?? 'consumer'),
-          decoration: const InputDecoration(labelText: 'Board Role'),
+          onChanged: (v) =>
+              setState(() => widget.data.connectionType = v ?? 'Wifi'),
+          decoration: const InputDecoration(labelText: 'Connection Type'),
         ),
         const SizedBox(height: 12),
         SwitchListTile(
@@ -631,6 +628,18 @@ class _ActivationSheetState extends State<_ActivationSheet>
     final theme = Theme.of(context);
     final mono = theme.textTheme.bodySmall;
 
+    // Build a sanitized preview (don’t show the full private key)
+    Map<String, dynamic> preview = {
+      "BaseURL": _baseUrlCtrl.text,
+      "PrivetKeyBase64": _privKeyBase64 == null
+          ? null
+          : "*** (${_privKeyBase64!.length} chars)",
+      "SerialNumber": _serialCtrl.text,
+      "InputEnable": _inEnable,
+      "OutputEnable": _outEnable,
+      "ConnectionType": widget.data.connectionType,
+    };
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -639,11 +648,11 @@ class _ActivationSheetState extends State<_ActivationSheet>
         _kv('Project', _selectedProject ?? '—'),
         _kv('Location', _selectedLocation ?? '—'),
         _kv('BaseURL', _baseUrlCtrl.text),
-        _kv('SerialNumber / Key', _serialCtrl.text),
+        _kv('SerialNumber', _serialCtrl.text),
         _kv('SealCode', _sealCtrl.text),
-        _kv('Role', _role),
         _kv('InputEnable', _inEnable.toString()),
         _kv('OutputEnable', _outEnable.toString()),
+        _kv('ConnectionType', widget.data.connectionType),
         const SizedBox(height: 12),
 
         Wrap(
@@ -654,7 +663,10 @@ class _ActivationSheetState extends State<_ActivationSheet>
               onPressed: _loadingKeys ? null : _maybeFetchKeys,
               icon: _loadingKeys
                   ? const SizedBox(
-                      width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
                   : const Icon(Icons.key),
               label: Text(_loadingKeys ? 'Fetching...' : 'Get RSA Keys'),
             ),
@@ -663,7 +675,9 @@ class _ActivationSheetState extends State<_ActivationSheet>
                 onPressed: () {
                   Clipboard.setData(ClipboardData(text: _privKeyBase64!));
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Private key (base64) copied')),
+                    const SnackBar(
+                      content: Text('Private key (base64) copied'),
+                    ),
                   );
                 },
                 icon: const Icon(Icons.copy),
@@ -673,7 +687,10 @@ class _ActivationSheetState extends State<_ActivationSheet>
               onPressed: _savingCfg ? null : _saveCfgToFile,
               icon: _savingCfg
                   ? const SizedBox(
-                      width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
                   : const Icon(Icons.save_alt),
               label: Text(_savingCfg ? 'Saving...' : 'Save & Read CFG'),
             ),
@@ -700,7 +717,10 @@ class _ActivationSheetState extends State<_ActivationSheet>
         ],
         if (_privKeyBase64 != null) ...[
           const SizedBox(height: 12),
-          Text('Private Key (base64, no headers)', style: theme.textTheme.labelLarge),
+          Text(
+            'Private Key (base64, no headers)',
+            style: theme.textTheme.labelLarge,
+          ),
           SelectableText(_privKeyBase64!, style: mono),
         ],
 
@@ -722,20 +742,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
         Text('Preview payload to board:', style: theme.textTheme.labelLarge),
         const SizedBox(height: 6),
         SelectableText(
-          const JsonEncoder.withIndent('  ').convert({
-            "type": "config",
-            "activate": {"key": "<serialNumber>", "sealCode": "<sealCode>"},
-            "place": {"project": "<project>", "location": "<location>"},
-            "connect": {"deviceId": "<deviceId>"},
-            "config": {
-              "baseUrl": "<baseUrl>",
-              "privateKeyBase64": "***",
-              "serialNumber": "<serialNumber>",
-              "inputEnable": false,
-              "outputEnable": false,
-              "boardRole": "consumer",
-            }
-          }),
+          const JsonEncoder.withIndent('  ').convert(preview),
           style: mono,
         ),
       ],
@@ -758,7 +765,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
 
       if (pVal is Map) {
         // Case 1: BaseURL map
-        final baseUrlBlock = pVal['BaseURL'] ?? pVal['baseUrl'] ?? pVal['baseURL'];
+        final baseUrlBlock =
+            pVal['BaseURL'] ?? pVal['baseUrl'] ?? pVal['baseURL'];
         if (baseUrlBlock is Map) {
           for (final e in baseUrlBlock.entries) {
             final locName = e.key.toString();
@@ -782,7 +790,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
 
         // Case 3: one baseUrl + locations list
         if (locs.isEmpty) {
-          final singleBase = pVal['BaseURL'] ?? pVal['baseUrl'] ?? pVal['baseURL'];
+          final singleBase =
+              pVal['BaseURL'] ?? pVal['baseUrl'] ?? pVal['baseURL'];
           final locations = pVal['Locations'] ?? pVal['locations'];
           if (singleBase is String && _looksLikeUrl(singleBase)) {
             if (locations is List) {
@@ -805,7 +814,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
     return out;
   }
 
-  bool _looksLikeUrl(String s) => s.startsWith('http://') || s.startsWith('https://');
+  bool _looksLikeUrl(String s) =>
+      s.startsWith('http://') || s.startsWith('https://');
 
   String? _findBaseUrl(String? project, String? location) {
     if (project == null || location == null) return null;
