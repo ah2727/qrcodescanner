@@ -275,24 +275,24 @@ class _ActivationSheetState extends State<_ActivationSheet>
 
   Map<String, dynamic> _buildSendPayload() => {
         // EXACT names requested by your firmware:
-        "BaseURL": widget.data.baseUrl,
-        "PrivetKeyBase64": _privKeyBase64, // from API (PEM stripped to base64)
-        "SerialNumber": widget.data.serialNumber,
-        "InputEnable": widget.data.inputEnable,
-        "OutputEnable": widget.data.outputEnable,
-        "ConnectionType": widget.data.connectionType, // Wifi | RS485 | LAN
+        "serial_number": widget.data.serialNumber,
+        "private_key": _privKeyBase64, // from API (PEM stripped to base64)
+        "base_url": widget.data.baseUrl,
+        "enabled_input": widget.data.inputEnable,
+        "enabled_output": widget.data.outputEnable,
+        "connection_type": widget.data.connectionType, // Wifi | RS485 | LAN
       };
 
   // -------------------- CFG Save / Read --------------------
 
   Map<String, dynamic> _buildCfgJson() => {
         // Minimal cfg mirrors the device payload (plus optional meta)
-        "BaseURL": widget.data.baseUrl,
-        "PrivetKeyBase64": _privKeyBase64,
-        "SerialNumber": widget.data.serialNumber,
-        "InputEnable": widget.data.inputEnable,
-        "OutputEnable": widget.data.outputEnable,
-        "ConnectionType": widget.data.connectionType,
+        "serial_number": widget.data.serialNumber,
+        "private_key": _privKeyBase64,
+        "base_url": widget.data.baseUrl,
+        "enabled_input": widget.data.inputEnable,
+        "enabled_output": widget.data.outputEnable,
+        "connection_type": widget.data.connectionType,
         "meta": {
           "savedAt": DateTime.now().toIso8601String(),
           // Optional context, not used by device:

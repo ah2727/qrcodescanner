@@ -22,7 +22,7 @@ class BoardBleService {
     _connSub = null;
   }
 
-  /// Connects, waits briefly, discovers services, auto-picks a writable char, negotiates MTU.
+  /// Connect -> small delay -> discover -> pick writable -> request MTU.
   Future<void> connect(String deviceId) async {
     await _connSub?.cancel();
 
@@ -36,32 +36,24 @@ class BoardBleService {
       if (update.connectionState == DeviceConnectionState.connected &&
           !completer.isCompleted) {
         try {
-          // Small delay helps some stacks stabilize before discovery.
           await Future<void>.delayed(const Duration(milliseconds: 300));
-
           final services = await _ble.discoverServices(deviceId);
           _servicesCache[deviceId] = services;
 
-          if (kDebugMode) {
-            debugPrint(await gattTable(deviceId));
-          }
+          if (kDebugMode) debugPrint(await gattTable(deviceId));
 
           _writeEndpoint[deviceId] = _pickWritableEndpoint(deviceId, services);
 
           try {
-            // iOS ignores this; Android can raise up to 517, but 247 is widely supported.
+            // iOS ignores; Android may negotiate 185/247/517.
             final mtu = await _ble.requestMtu(deviceId: deviceId, mtu: 247);
             _mtuCache[deviceId] = mtu;
-          } catch (_) {
-            // Ignore; we'll chunk safely.
-          }
-
+          } catch (_) {/* ignore */}
           completer.complete();
         } catch (e) {
           completer.completeError(e);
         }
       }
-
       if (update.failure != null && !completer.isCompleted) {
         completer.completeError(update.failure!);
       }
@@ -138,43 +130,123 @@ class BoardBleService {
 
   // ---------------- Public API ----------------
 
-  /// Sends a JSON payload to the board (chunked & retried if needed).
+  /// Sends ONLY raw data as string frames:
+  ///   "1|<chunk>" ... "N|<chunk>|END"
+  /// Exactly [sections] frames. One BLE write per frame. No inner chunking.
   Future<void> sendConfig({
     required String deviceId,
     required Map<String, dynamic> payload,
+    int sections = 16,
+    int interFrameDelayMs = 800,     // safer default pacing
+    bool preferNoResponse = false,   // force writeWithoutResponse if needed
   }) async {
-    final endpoint = await _ensureWriteEndpoint(deviceId);
+    final ep = await _ensureWriteEndpoint(deviceId);
 
-    // Encode JSON
+    // Optional: force write mode (some firmwares only accept NoResponse).
+    if (preferNoResponse && ep.writeWithoutResponse) {
+      overrideWriteCharacteristic(
+        deviceId: deviceId,
+        serviceId: ep.qc.serviceId,
+        characteristicId: ep.qc.characteristicId,
+        writeWithResponse: false,
+        writeWithoutResponse: true,
+      );
+    }
+
     final data = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
+    final total = data.length;
 
-    // Compute safe chunk size (iOS ~20 bytes, Android = MTU-3 if known)
     final mtu = _mtuCache[deviceId];
-    final maxChunk =
-        Platform.isIOS ? 20 : ((mtu != null && mtu > 3) ? (mtu - 3) : 20);
+    final maxPacket = Platform.isIOS
+        ? 20
+        : ((mtu != null && mtu > 3) ? (mtu - 3) : 20);
 
-    // Attempt write; on certain GATT failures (e.g., 133), do ONE reconnect+retry.
-    try {
-      await _writeChunked(endpoint, data, maxChunk: maxChunk);
-    } catch (e) {
-      if (_looksLikeTransientGatt(e)) {
-        // Retry once: disconnect -> wait -> reconnect -> rediscover -> re-pick endpoint -> write again
-        try {
-          await disconnect();
-          await Future<void>.delayed(const Duration(milliseconds: 300));
-          await connect(deviceId);
-          final ep2 = await _ensureWriteEndpoint(deviceId);
-          await _writeChunked(ep2, data, maxChunk: maxChunk);
-          return;
-        } catch (ee) {
-          rethrow; // surface second failure
+    // Preflight: exact capacity across N frames (accounts for header + |END).
+    final capacity = _exactCapacity(sections, maxPacket);
+    if (capacity < total) {
+      throw Exception(
+        'Payload ${total}B > capacity ${capacity}B '
+        '(${sections} frames @ MTU→maxWrite=$maxPacket). '
+        'Increase MTU or sections, or shrink payload.',
+      );
+    }
+
+    // Send frames
+    int offset = 0;
+    for (int i = 1; i <= sections; i++) {
+      final isLast = i == sections;
+      final header = '$i|';
+      final headerLen = utf8.encode(header).length;
+      final endLen = isLast ? 4 : 0; // "|END"
+      final avail = maxPacket - headerLen - endLen;
+      final take = (total - offset) > 0
+          ? (((total - offset) <= avail) ? (total - offset) : avail)
+          : 0;
+
+      final bb = BytesBuilder();
+      bb.add(utf8.encode(header));
+      if (take > 0) {
+        bb.add(data.sublist(offset, offset + take));
+        offset += take;
+      }
+      if (isLast) {
+        bb.add(utf8.encode('|END'));
+      }
+
+      final frameBytes = bb.toBytes();
+
+      // Single write with mode fallback; on transient GATT, reconnect+retry once.
+      try {
+        await _writeWithFallback(_writeEndpoint[deviceId]!, frameBytes);
+      } catch (e) {
+        if (_looksTransientGatt(e)) {
+          // reconnect once and retry this frame
+          await _retryOnce(deviceId);
+          await _writeWithFallback(_writeEndpoint[deviceId]!, frameBytes);
+        } else {
+          debugPrint(
+            'Write failed on frame $i (len=${frameBytes.length}, max=$maxPacket): $e',
+          );
+          rethrow;
         }
       }
-      rethrow;
+
+      if (!isLast && interFrameDelayMs > 0) {
+        await Future<void>.delayed(Duration(milliseconds: interFrameDelayMs));
+      }
+    }
+
+    // Must have consumed all payload
+    if (offset < total) {
+      throw Exception(
+        'Internal sizing error: not all bytes sent (sent $offset / $total).',
+      );
     }
   }
 
   // ---------------- Internals ----------------
+
+  int _exactCapacity(int sections, int maxPacket) {
+    int cap = 0;
+    for (int i = 1; i <= sections; i++) {
+      final headerLen = utf8.encode('$i|').length;
+      final endLen = (i == sections) ? 4 : 0; // "|END"
+      final avail = maxPacket - headerLen - endLen;
+      cap += (avail > 0) ? avail : 0;
+    }
+    return cap;
+  }
+
+  Future<void> _retryOnce(String deviceId) async {
+    await disconnect();
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    await connect(deviceId);
+  }
+
+  bool _looksTransientGatt(Object e) {
+    final m = e.toString().toLowerCase();
+    return m.contains('133') || m.contains('gatt') || m.contains('timeout');
+  }
 
   Future<_WriteEndpoint> _ensureWriteEndpoint(String deviceId) async {
     final cached = _writeEndpoint[deviceId];
@@ -189,121 +261,62 @@ class BoardBleService {
 
   _WriteEndpoint _pickWritableEndpoint(
       String deviceId, List<DiscoveredService> services) {
-    DiscoveredService? chosenSvc;
-    DiscoveredCharacteristic? chosenChar;
+    DiscoveredService? svc;
+    DiscoveredCharacteristic? ch;
 
-    // Prefer writeWithoutResponse for speed if available…
+    // Prefer write-with-response first (more compatible),
+    // then fall back to write-without-response if not present.
     for (final s in services) {
       for (final c in s.characteristics) {
-        if (c.isWritableWithoutResponse) {
-          chosenSvc = s;
-          chosenChar = c;
-          break;
-        }
+        if (c.isWritableWithResponse) { svc = s; ch = c; break; }
       }
-      if (chosenChar != null) break;
+      if (ch != null) break;
     }
-
-    // …otherwise use write-with-response.
-    if (chosenChar == null) {
+    if (ch == null) {
       for (final s in services) {
         for (final c in s.characteristics) {
-          if (c.isWritableWithResponse) {
-            chosenSvc = s;
-            chosenChar = c;
-            break;
-          }
+          if (c.isWritableWithoutResponse) { svc = s; ch = c; break; }
         }
-        if (chosenChar != null) break;
+        if (ch != null) break;
       }
     }
 
-    if (chosenSvc == null || chosenChar == null) {
-      throw Exception(
-        'No writable characteristic found.\n'
-        'Tip: verify with nRF Connect that the device exposes a writable characteristic.',
-      );
+    if (svc == null || ch == null) {
+      throw Exception('No writable characteristic found. Verify with nRF Connect.');
     }
 
     return _WriteEndpoint(
       qc: QualifiedCharacteristic(
         deviceId: deviceId,
-        serviceId: chosenSvc.serviceId,
-        characteristicId: chosenChar.characteristicId,
+        serviceId: svc.serviceId,
+        characteristicId: ch.characteristicId,
       ),
-      writeWithResponse: chosenChar.isWritableWithResponse,
-      writeWithoutResponse: chosenChar.isWritableWithoutResponse,
+      writeWithResponse: ch.isWritableWithResponse,
+      writeWithoutResponse: ch.isWritableWithoutResponse,
     );
   }
 
-  Future<void> _writeChunked(
-    _WriteEndpoint endpoint,
-    Uint8List data, {
-    required int maxChunk,
-  }) async {
-    if (data.length <= maxChunk) {
-      await _writeWithFallback(endpoint, data);
-      return;
-    }
-    for (int i = 0; i < data.length; i += maxChunk) {
-      final end = (i + maxChunk < data.length) ? i + maxChunk : data.length;
-      final chunk = data.sublist(i, end);
-      await _writeWithFallback(endpoint, chunk);
-      await Future<void>.delayed(const Duration(milliseconds: 15)); // pacing
-    }
-  }
-
-  /// Try WITH RESPONSE first when both are advertised (more compatible),
-  /// fall back to WITHOUT RESPONSE once if the first attempt fails.
-  Future<void> _writeWithFallback(
-    _WriteEndpoint endpoint,
-    List<int> value,
-  ) async {
-    final both = endpoint.writeWithResponse && endpoint.writeWithoutResponse;
+  /// One BLE write with mode fallback (with-response -> without-response if both).
+  Future<void> _writeWithFallback(_WriteEndpoint ep, List<int> value) async {
+    final both = ep.writeWithResponse && ep.writeWithoutResponse;
 
     Future<void> wRsp() =>
-        _ble.writeCharacteristicWithResponse(endpoint.qc, value: value);
+        _ble.writeCharacteristicWithResponse(ep.qc, value: value);
     Future<void> wNoRsp() =>
-        _ble.writeCharacteristicWithoutResponse(endpoint.qc, value: value);
+        _ble.writeCharacteristicWithoutResponse(ep.qc, value: value);
 
     try {
-      if (both) {
-        await wRsp();
-        return;
-      }
-      if (endpoint.writeWithResponse) {
-        await wRsp();
-        return;
-      }
-      if (endpoint.writeWithoutResponse) {
-        await wNoRsp();
-        return;
-      }
+      if (both) { await wRsp(); return; }
+      if (ep.writeWithResponse) { await wRsp(); return; }
+      if (ep.writeWithoutResponse) { await wNoRsp(); return; }
       throw Exception('Resolved characteristic is not writable.');
     } catch (e) {
       if (both) {
-        // Try the other mode once
-        try {
-          await wNoRsp();
-          return;
-        } catch (_) {
-          // fall through to rethrow below
-        }
+        try { await wNoRsp(); return; } catch (_) {}
       }
-      debugPrint(
-        'BLE write failed on ${endpoint.qc.serviceId}/${endpoint.qc.characteristicId}: $e',
-      );
+      debugPrint('BLE write failed on ${ep.qc.serviceId}/${ep.qc.characteristicId}: $e');
       rethrow;
     }
-  }
-
-  bool _looksLikeTransientGatt(Object e) {
-    final msg = e.toString().toLowerCase();
-    // Heuristics: Android "133", generic "gatt" error, or "status" hints.
-    return msg.contains('133') ||
-        msg.contains('gatt') ||
-        msg.contains('status') ||
-        msg.contains('timeout');
   }
 }
 
@@ -311,7 +324,6 @@ class _WriteEndpoint {
   final QualifiedCharacteristic qc;
   final bool writeWithResponse;
   final bool writeWithoutResponse;
-
   _WriteEndpoint({
     required this.qc,
     required this.writeWithResponse,
