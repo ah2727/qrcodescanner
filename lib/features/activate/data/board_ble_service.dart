@@ -136,7 +136,7 @@ class BoardBleService {
     int? sections, // if null/<=0 → auto; if set → will be adjusted
     int interFrameDelayMs = 800, // pacing between frames
     bool preferNoResponse = false, // force writeWithoutResponse if needed
-    int maxSections = 64, // hard cap for auto-expand
+    int maxSections = 6400, // hard cap for auto-expand
   }) async {
     // resolve endpoint
     var ep = await _ensureWriteEndpoint(deviceId);
