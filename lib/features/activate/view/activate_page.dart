@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../../activate/controller/ble_scanner.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import './activation_sheet.dart';
+import '../../../storage/config_history_store.dart';
+
 class ActivatePage extends StatelessWidget {
   const ActivatePage({super.key});
 

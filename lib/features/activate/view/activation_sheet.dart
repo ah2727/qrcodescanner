@@ -9,6 +9,7 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
+import '../../../storage/config_history_store.dart';
 
 // Update these imports to match your project structure
 import '../../../common/widgets/qr_scanner_page.dart';
@@ -25,9 +26,10 @@ class ActivationData {
   String place = '';
   String baseUrl = '';
   String connectionType = 'Wifi'; // Wifi | RS485 | LAN
-
+  String projectName = "";
   // Tab 3 (Connect)
   String deviceId = '';
+  String locationName = '';
   bool inputEnable = false;
   bool outputEnable = false;
 }
@@ -256,6 +258,16 @@ class _ActivationSheetState extends State<_ActivationSheet>
     final payload = _buildSendPayload();
 
     try {
+      await ConfigHistoryStore.add(
+        deviceId: widget.data.deviceId,
+        baseUrl: widget.data.baseUrl,
+        payload: payload,
+        success: true,
+        extra: {
+          'project': widget.data.projectName,
+          'location': widget.data.locationName,
+        },
+      );
       await widget.service.sendConfig(
         deviceId: widget.data.deviceId,
         payload: payload,
@@ -274,33 +286,33 @@ class _ActivationSheetState extends State<_ActivationSheet>
   }
 
   Map<String, dynamic> _buildSendPayload() => {
-        // EXACT names requested by your firmware:
-        "serial_number": widget.data.serialNumber,
-        "private_key": _privKeyBase64, // from API (PEM stripped to base64)
-        "base_url": widget.data.baseUrl,
-        "enabled_input": widget.data.inputEnable,
-        "enabled_output": widget.data.outputEnable,
-        "connection_type": widget.data.connectionType, // Wifi | RS485 | LAN
-      };
+    // EXACT names requested by your firmware:
+    "serial_number": widget.data.serialNumber,
+    "private_key": _privKeyBase64, // from API (PEM stripped to base64)
+    "base_url": widget.data.baseUrl,
+    "enabled_input": widget.data.inputEnable,
+    "enabled_output": widget.data.outputEnable,
+    "connection_type": widget.data.connectionType, // Wifi | RS485 | LAN
+  };
 
   // -------------------- CFG Save / Read --------------------
 
   Map<String, dynamic> _buildCfgJson() => {
-        // Minimal cfg mirrors the device payload (plus optional meta)
-        "serial_number": widget.data.serialNumber,
-        "private_key": _privKeyBase64,
-        "base_url": widget.data.baseUrl,
-        "enabled_input": widget.data.inputEnable,
-        "enabled_output": widget.data.outputEnable,
-        "connection_type": widget.data.connectionType,
-        "meta": {
-          "savedAt": DateTime.now().toIso8601String(),
-          // Optional context, not used by device:
-          "project": widget.data.project,
-          "place": widget.data.place,
-          "sealCode": widget.data.sealCode,
-        }
-      };
+    // Minimal cfg mirrors the device payload (plus optional meta)
+    "serial_number": widget.data.serialNumber,
+    "private_key": _privKeyBase64,
+    "base_url": widget.data.baseUrl,
+    "enabled_input": widget.data.inputEnable,
+    "enabled_output": widget.data.outputEnable,
+    "connection_type": widget.data.connectionType,
+    "meta": {
+      "savedAt": DateTime.now().toIso8601String(),
+      // Optional context, not used by device:
+      "project": widget.data.project,
+      "place": widget.data.place,
+      "sealCode": widget.data.sealCode,
+    },
+  };
 
   Future<void> _saveCfgToFile() async {
     _collectForm();
@@ -327,8 +339,9 @@ class _ActivationSheetState extends State<_ActivationSheet>
           : 'board_cfg_${DateTime.now().millisecondsSinceEpoch}.json';
       final file = File('${dir.path}/$name');
 
-      final pretty =
-          const JsonEncoder.withIndent('  ').convert(_buildCfgJson());
+      final pretty = const JsonEncoder.withIndent(
+        '  ',
+      ).convert(_buildCfgJson());
       await file.writeAsString(pretty, flush: true);
 
       // Read-back to verify
@@ -458,8 +471,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
                       _tabs.index < 3
                           ? 'Continue'
                           : _sent
-                              ? 'Sent'
-                              : 'Send To Board',
+                          ? 'Sent'
+                          : 'Send To Board',
                     ),
                   ),
                 ],
@@ -536,8 +549,9 @@ class _ActivationSheetState extends State<_ActivationSheet>
         ],
         DropdownButtonFormField<String>(
           value: _selectedProject,
-          items:
-              projects.map((p) => DropdownMenuItem(value: p, child: Text(p))).toList(),
+          items: projects
+              .map((p) => DropdownMenuItem(value: p, child: Text(p)))
+              .toList(),
           onChanged: (v) {
             setState(() {
               _selectedProject = v;
