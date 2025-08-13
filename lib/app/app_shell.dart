@@ -16,6 +16,7 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   int _current = 0;
 
+  // independent stacks for each tab
   final _navKeys = <TabItem, GlobalKey<NavigatorState>>{
     TabItem.activate: GlobalKey<NavigatorState>(),
     TabItem.boards:   GlobalKey<NavigatorState>(),
@@ -27,9 +28,9 @@ class _AppShellState extends State<AppShell> {
     final key = _navKeys[TabItem.values[_current]]!;
     if (key.currentState?.canPop() ?? false) {
       key.currentState!.pop();
-      return false;
+      return false; // handled inside current tab
     }
-    return true;
+    return true; // allow app to close
   }
 
   @override
@@ -40,15 +41,15 @@ class _AppShellState extends State<AppShell> {
         body: IndexedStack(
           index: _current,
           children: [
-            _TabNavigator(navigatorKey: _navKeys[TabItem.activate]!, root: const ActivatePage()),
-            _TabNavigator(navigatorKey: _navKeys[TabItem.boards]!,   root: const BoardsPage()),
-            _TabNavigator(navigatorKey: _navKeys[TabItem.keys]!,     root: const KeysPage()),
-            _TabNavigator(navigatorKey: _navKeys[TabItem.profiles]!, root: const ProfilesPage()),
+            _TabNavigator(navigatorKey: _navKeys[TabItem.activate]!, child: const ActivatePage()),
+            _TabNavigator(navigatorKey: _navKeys[TabItem.boards]!,   child: const BoardsPage()),
+            _TabNavigator(navigatorKey: _navKeys[TabItem.keys]!,     child: const KeysPage()),
+            _TabNavigator(navigatorKey: _navKeys[TabItem.profiles]!, child: const ProfilesPage()),
           ],
         ),
         bottomNavigationBar: BottomNav(
           currentIndex: _current,
-          onTap: (i) => setState(() => _current = i),
+          onTap: (i) => setState(() => _current = i), // <- critical
         ),
       ),
     );
@@ -57,15 +58,15 @@ class _AppShellState extends State<AppShell> {
 
 class _TabNavigator extends StatelessWidget {
   final GlobalKey<NavigatorState> navigatorKey;
-  final Widget root;
-  const _TabNavigator({required this.navigatorKey, required this.root});
+  final Widget child;
+  const _TabNavigator({required this.navigatorKey, required this.child});
 
   @override
   Widget build(BuildContext context) {
     return Navigator(
       key: navigatorKey,
       onGenerateRoute: (settings) =>
-          MaterialPageRoute(builder: (_) => root, settings: settings),
+          MaterialPageRoute(builder: (_) => child, settings: settings),
     );
   }
 }

@@ -158,7 +158,7 @@ class BoardBleService {
     final total = bytes.length;
 
     // we hard-cap each frame to 20B (includes header and, on last frame, "|END")
-    const int maxPacket = 20;
+    const int maxPacket = 256;
 
     // decide section count dynamically
     final needed = _minSectionsFor(
