@@ -55,9 +55,7 @@ class BoardsPage extends StatelessWidget {
               final project = (extra?['project'] ?? '').toString();
               final section = (extra?['location'] ?? '').toString();
 
-              final model   = (payload?['model'] ?? '—').toString();
-              final version = (payload?['version'] ?? '—').toString();
-              final sectionCode = (payload?['section_code'] ?? '—').toString();
+
 
               final baseUrl = (rec['baseUrl'] ?? '-').toString();
               final sentAt  = (rec['sentAt'] ?? '').toString();
@@ -96,9 +94,7 @@ class BoardsPage extends StatelessWidget {
                       const SizedBox(height: 12),
 
                       // Details block
-                      _kv('Model', model),
-                      _kv('Version', version),
-                      _kv('Section Code', sectionCode),
+
                       _kv('Project Base URL', baseUrl),
                       _kv('Created At', created.isEmpty ? '—' : created),
                       if (!ok && error.isNotEmpty) _kv('Error', error),

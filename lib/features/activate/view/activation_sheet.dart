@@ -33,6 +33,10 @@ class ActivationData {
   bool inputEnable = false;
   bool outputEnable = false;
   bool isConsumer = false; // Optional, not used by device
+
+  // Wi-Fi (used when connectionType == 'Wifi')
+  String wifiName = '';
+  String wifiPass = '';
 }
 
 Future<void> showActivationSheet({
@@ -270,12 +274,20 @@ class _ActivationSheetState extends State<_ActivationSheet>
           'location': widget.data.locationName,
         },
       );
-      await KeyStore.upsertFromConfigPayload(payload);
 
       await widget.service.sendConfig(
         deviceId: widget.data.deviceId,
         payload: payload,
       );
+      final serial = (payload['serial_number'] ?? '').toString();
+      if (serial.isNotEmpty) {
+        await KeyStore.markUsedBySerial(serial);
+        // اگر private_key هم از سمت سرور دارید و می‌خواهید در QR کامل ذخیره شود:
+        final pk = (payload['private_key'] ?? '').toString();
+        if (pk.isNotEmpty) {
+          await KeyStore.attachPrivateKeyAndUse(serial, pk);
+        }
+      }
       if (!mounted) return;
       setState(() => _sent = true);
       ScaffoldMessenger.of(
@@ -298,6 +310,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
     "enabled_output": widget.data.outputEnable,
     "connection_type": widget.data.connectionType, // Wifi | RS485 | LAN
     "is_consumer": widget.data.isConsumer, // Optional, not used by device
+    "wifi_name": widget.data.wifiName, // only if Wifi
+    "wifi_pass": widget.data.wifiPass, // only if Wifi
   };
 
   // -------------------- CFG Save / Read --------------------
@@ -597,6 +611,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
   }
 
   Widget _tabConnect() {
+    final isWifi = widget.data.connectionType == 'Wifi';
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -618,6 +634,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
           onPressed: _connecting ? null : _connect,
         ),
         const Divider(height: 32),
+
+        // Connection type
         DropdownButtonFormField<String>(
           value: widget.data.connectionType,
           items: const [
@@ -625,10 +643,57 @@ class _ActivationSheetState extends State<_ActivationSheet>
             DropdownMenuItem(value: 'RS485', child: Text('RS485')),
             DropdownMenuItem(value: 'LAN', child: Text('LAN')),
           ],
-          onChanged: (v) =>
-              setState(() => widget.data.connectionType = v ?? 'Wifi'),
+          onChanged: (v) => setState(() {
+            widget.data.connectionType = v ?? 'Wifi';
+          }),
           decoration: const InputDecoration(labelText: 'Connection Type'),
         ),
+
+        // Wi-Fi fields (only when Wifi)
+        if (isWifi) ...[
+          const SizedBox(height: 12),
+          TextFormField(
+            initialValue: widget.data.wifiName,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(
+              labelText: 'Wi-Fi Name (SSID)',
+              hintText: 'e.g. OfficeWifi',
+            ),
+            onChanged: (v) => setState(() => widget.data.wifiName = v.trim()),
+          ),
+          const SizedBox(height: 12),
+          StatefulBuilder(
+            builder: (context, setLocal) {
+              // local state to show/hide password without touching parent state
+              bool show = false;
+              return TextFormField(
+                initialValue: widget.data.wifiPass,
+                obscureText: !show,
+                enableSuggestions: false,
+                autocorrect: false,
+                decoration: InputDecoration(
+                  labelText: 'Wi-Fi Password',
+                  suffixIcon: StatefulBuilder(
+                    builder: (context, setIcon) => IconButton(
+                      tooltip: show ? 'Hide' : 'Show',
+                      icon: Icon(
+                        show ? Icons.visibility_off : Icons.visibility,
+                      ),
+                      onPressed: () {
+                        show = !show;
+                        // rebuild both text field and icon
+                        setLocal(() {});
+                        setIcon(() {});
+                      },
+                    ),
+                  ),
+                ),
+                onChanged: (v) => setState(() => widget.data.wifiPass = v),
+              );
+            },
+          ),
+        ],
+
         const SizedBox(height: 12),
         SwitchListTile(
           value: widget.data.inputEnable,
@@ -640,7 +705,6 @@ class _ActivationSheetState extends State<_ActivationSheet>
           onChanged: (v) => setState(() => widget.data.outputEnable = v),
           title: const Text('Output Enable'),
         ),
-        // 👇 New: is_consumer
         SwitchListTile(
           value: widget.data.isConsumer,
           onChanged: (v) => setState(() => widget.data.isConsumer = v),

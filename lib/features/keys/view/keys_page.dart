@@ -1,12 +1,15 @@
-// lib/features/keys/view/keys_page.dart
+import 'dart:io';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'package:qrcodescanner/storage/key_store.dart';
-import 'package:qrcodescanner/storage/config_history_store.dart';
 import 'package:qrcodescanner/features/keys/view/key_detail_page.dart';
 import '../../../core/theme/theme_controller.dart';
 
@@ -34,9 +37,7 @@ class KeysPage extends StatelessWidget {
         builder: (_, Box b, __) {
           final items = KeyStore.allSortedDesc();
           if (items.isEmpty) {
-            return const Center(
-              child: Text('No keys yet. Tap + to add from history.'),
-            );
+            return const Center(child: Text('هیچ کلیدی نیست. برای ساختن، + را بزنید.'));
           }
 
           return ListView.separated(
@@ -45,27 +46,37 @@ class KeysPage extends StatelessWidget {
             separatorBuilder: (_, __) => const SizedBox(height: 8),
             itemBuilder: (context, i) {
               final it = items[i];
-              final date = DateFormat('dd/MM/yyyy').format(it.createdAt);
+              final date = DateFormat('yyyy/MM/dd  HH:mm').format(it.createdAt);
+              final isUsed = it.status == 'used';
+
+              final qrData = it.qrData.isNotEmpty
+                  ? it.qrData
+                  : '{"serial_number":"${it.serialNumber}"}';
+
               return Card(
                 margin: EdgeInsets.zero,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   child: Row(
                     children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: SizedBox(
-                          width: 48,
-                          height: 48,
-                          child: QrImageView(
-                            data: _miniQrData(it), // <<< use short data
-                            version: QrVersions.auto,
+                      // 👇 تپ روی QR => دانلود PNG باکیفیت
+                      Tooltip(
+                        message: 'برای دانلود QR تپ کنید',
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => _saveQrPng(context, it.serialNumber, qrData),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: SizedBox(
+                              width: 48,
+                              height: 48,
+                              child: QrImageView(
+                                data: qrData,
+                                version: QrVersions.auto,
+                                errorStateBuilder: (c, e) => const Icon(Icons.qr_code_2),
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -74,27 +85,19 @@ class KeysPage extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              it.displayCode,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: 16,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                            Text(it.serialNumber,
+                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis),
                             const SizedBox(height: 4),
-                            Text(
-                              date,
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
+                            Text(date, style: Theme.of(context).textTheme.bodySmall),
                             const SizedBox(height: 2),
-                            const Text(
-                              'Newly Generated',
+                            Text(
+                              isUsed ? 'Used' : 'Newly Generated',
                               style: TextStyle(
-                                color: Colors.red,
+                                color: isUsed ? Colors.grey : Colors.red,
                                 fontSize: 12,
-                                fontWeight: FontWeight.w500,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ],
@@ -105,10 +108,7 @@ class KeysPage extends StatelessWidget {
                         icon: const Icon(Icons.chevron_right),
                         onPressed: () {
                           Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) =>
-                                  KeyDetailPage(hiveKey: it.hiveKey),
-                            ),
+                            MaterialPageRoute(builder: (_) => KeyDetailPage(hiveKey: it.hiveKey)),
                           );
                         },
                       ),
@@ -132,93 +132,88 @@ class KeysPage extends StatelessWidget {
           );
         },
       ),
-    );
-  }
-}
 
-Future<String?> _pickDeviceIdFromHistory(BuildContext context) async {
-  final records = ConfigHistoryStore.all(); // List<Map<String, dynamic>>
-  final items = <_DeviceItem>[];
-
-  for (final r in records) {
-    final id = (r['deviceId'] ?? '').toString();
-    if (id.isEmpty) continue;
-    final sentAt = DateTime.tryParse(r['sentAt']?.toString() ?? '');
-    final project = (r['extra'] is Map) ? (r['extra']['project'] ?? '') : '';
-    final location = (r['extra'] is Map) ? (r['extra']['location'] ?? '') : '';
-    items.add(
-      _DeviceItem(
-        id: id,
-        sentAt: sentAt,
-        project: '$project',
-        location: '$location',
+      // ➕ ساخت تعدادی QR
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          final n = await _askHowMany(context);
+          if (n == null) return;
+          final made = await KeyStore.generate(n);
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('${made.length} key(s) generated')),
+            );
+          }
+        },
+        child: const Icon(Icons.add),
       ),
     );
   }
 
-  items.sort(
-    (a, b) => (b.sentAt ?? DateTime(0)).compareTo(a.sentAt ?? DateTime(0)),
-  );
-  final unique = <String, _DeviceItem>{};
-  for (final it in items) {
-    unique.putIfAbsent(it.id, () => it);
+  Future<int?> _askHowMany(BuildContext context) async {
+    final ctrl = TextEditingController(text: '1');
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('چند QR Code ساخته شود؟'),
+          content: TextField(
+            controller: ctrl,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(hintText: 'مثلاً: 5'),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('انصراف')),
+            FilledButton(
+              onPressed: () {
+                final v = int.tryParse(ctrl.text.trim());
+                if (v == null || v <= 0) return;
+                final clamped = v > 200 ? 200 : v;
+                Navigator.pop(ctx, clamped);
+              },
+              child: const Text('بساز'),
+            ),
+          ],
+        );
+      },
+    );
   }
-  final list = unique.values.toList();
+}
 
-  if (list.isEmpty) {
+/// ذخیره QR به صورت PNG با کیفیت بالا (1024px) در Documents برنامه
+Future<void> _saveQrPng(BuildContext context, String serial, String data) async {
+  try {
+    final painter = QrPainter(
+      data: data,
+      version: QrVersions.auto,
+      gapless: true,
+      // رنگ‌ها اختیاری‌اند؛ پیش‌فرض‌ها هم جواب می‌دهند
+      color: const Color(0xFF000000),
+      emptyColor: const Color(0xFFFFFFFF),
+    );
+
+    // رندر باکیفیت (1024px)
+    final ui.Image img = await painter.toImage(1024);
+    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+    final bytes = byteData!.buffer.asUint8List();
+
+    final dir = await getApplicationDocumentsDirectory();
+    final ts = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+    final safeSerial = (serial.isEmpty ? 'key' : serial).replaceAll(RegExp(r'[^\w\-]+'), '_');
+    final file = File('${dir.path}/qr_${safeSerial}_$ts.png');
+
+    await file.writeAsBytes(bytes);
+
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No devices in config history')),
+        SnackBar(content: Text('Saved: ${file.path}')),
       );
     }
-    return null;
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Save failed: $e')),
+      );
+    }
   }
-  if (list.length == 1) return list.first.id;
-
-  return showDialog<String>(
-    context: context,
-    builder: (ctx) => SimpleDialog(
-      title: const Text('Select device'),
-      children: list.map((it) {
-        final meta = [
-          if (it.project.isNotEmpty) it.project,
-          if (it.location.isNotEmpty) it.location,
-        ].join(' • ');
-        final dateStr = it.sentAt?.toLocal().toString().split('.').first ?? '';
-        return SimpleDialogOption(
-          onPressed: () => Navigator.pop(ctx, it.id),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(it.id, style: const TextStyle(fontWeight: FontWeight.w600)),
-              if (meta.isNotEmpty)
-                Text(meta, style: const TextStyle(fontSize: 12)),
-              if (dateStr.isNotEmpty)
-                Text(dateStr, style: const TextStyle(fontSize: 12)),
-            ],
-          ),
-        );
-      }).toList(),
-    ),
-  );
-}
-String _miniQrData(KeyRecord r) {
-  // Prefer a short, stable ID for the small preview.
-  // You can choose what you want to encode:
-  // - r.serialNumber
-  // - r.displayCode (8 chars)
-  // - 'key:${r.displayCode}'
-  return (r.serialNumber.isNotEmpty) ? r.serialNumber : r.displayCode;
-}
-class _DeviceItem {
-  final String id;
-  final DateTime? sentAt;
-  final String project;
-  final String location;
-  _DeviceItem({
-    required this.id,
-    this.sentAt,
-    required this.project,
-    required this.location,
-  });
 }
