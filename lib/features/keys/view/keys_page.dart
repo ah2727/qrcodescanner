@@ -34,7 +34,9 @@ class KeysPage extends StatelessWidget {
         builder: (_, Box b, __) {
           final items = KeyStore.allSortedDesc();
           if (items.isEmpty) {
-            return const Center(child: Text('No keys yet. Tap + to add from history.'));
+            return const Center(
+              child: Text('No keys yet. Tap + to add from history.'),
+            );
           }
 
           return ListView.separated(
@@ -46,9 +48,14 @@ class KeysPage extends StatelessWidget {
               final date = DateFormat('dd/MM/yyyy').format(it.createdAt);
               return Card(
                 margin: EdgeInsets.zero,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
                   child: Row(
                     children: [
                       ClipRRect(
@@ -56,7 +63,10 @@ class KeysPage extends StatelessWidget {
                         child: SizedBox(
                           width: 48,
                           height: 48,
-                          child: QrImageView(data: it.qrData, version: QrVersions.auto),
+                          child: QrImageView(
+                            data: _miniQrData(it), // <<< use short data
+                            version: QrVersions.auto,
+                          ),
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -64,15 +74,29 @@ class KeysPage extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(it.displayCode,
-                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis),
+                            Text(
+                              it.displayCode,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 16,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                             const SizedBox(height: 4),
-                            Text(date, style: Theme.of(context).textTheme.bodySmall),
+                            Text(
+                              date,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
                             const SizedBox(height: 2),
-                            const Text('Newly Generated',
-                                style: TextStyle(color: Colors.red, fontSize: 12, fontWeight: FontWeight.w500)),
+                            const Text(
+                              'Newly Generated',
+                              style: TextStyle(
+                                color: Colors.red,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -81,7 +105,10 @@ class KeysPage extends StatelessWidget {
                         icon: const Icon(Icons.chevron_right),
                         onPressed: () {
                           Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => KeyDetailPage(hiveKey: it.hiveKey)),
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  KeyDetailPage(hiveKey: it.hiveKey),
+                            ),
                           );
                         },
                       ),
@@ -119,10 +146,19 @@ Future<String?> _pickDeviceIdFromHistory(BuildContext context) async {
     final sentAt = DateTime.tryParse(r['sentAt']?.toString() ?? '');
     final project = (r['extra'] is Map) ? (r['extra']['project'] ?? '') : '';
     final location = (r['extra'] is Map) ? (r['extra']['location'] ?? '') : '';
-    items.add(_DeviceItem(id: id, sentAt: sentAt, project: '$project', location: '$location'));
+    items.add(
+      _DeviceItem(
+        id: id,
+        sentAt: sentAt,
+        project: '$project',
+        location: '$location',
+      ),
+    );
   }
 
-  items.sort((a, b) => (b.sentAt ?? DateTime(0)).compareTo(a.sentAt ?? DateTime(0)));
+  items.sort(
+    (a, b) => (b.sentAt ?? DateTime(0)).compareTo(a.sentAt ?? DateTime(0)),
+  );
   final unique = <String, _DeviceItem>{};
   for (final it in items) {
     unique.putIfAbsent(it.id, () => it);
@@ -155,8 +191,10 @@ Future<String?> _pickDeviceIdFromHistory(BuildContext context) async {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(it.id, style: const TextStyle(fontWeight: FontWeight.w600)),
-              if (meta.isNotEmpty) Text(meta, style: const TextStyle(fontSize: 12)),
-              if (dateStr.isNotEmpty) Text(dateStr, style: const TextStyle(fontSize: 12)),
+              if (meta.isNotEmpty)
+                Text(meta, style: const TextStyle(fontSize: 12)),
+              if (dateStr.isNotEmpty)
+                Text(dateStr, style: const TextStyle(fontSize: 12)),
             ],
           ),
         );
@@ -164,11 +202,23 @@ Future<String?> _pickDeviceIdFromHistory(BuildContext context) async {
     ),
   );
 }
-
+String _miniQrData(KeyRecord r) {
+  // Prefer a short, stable ID for the small preview.
+  // You can choose what you want to encode:
+  // - r.serialNumber
+  // - r.displayCode (8 chars)
+  // - 'key:${r.displayCode}'
+  return (r.serialNumber.isNotEmpty) ? r.serialNumber : r.displayCode;
+}
 class _DeviceItem {
   final String id;
   final DateTime? sentAt;
   final String project;
   final String location;
-  _DeviceItem({required this.id, this.sentAt, required this.project, required this.location});
+  _DeviceItem({
+    required this.id,
+    this.sentAt,
+    required this.project,
+    required this.location,
+  });
 }
