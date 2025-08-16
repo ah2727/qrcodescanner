@@ -12,8 +12,8 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _userCtrl = TextEditingController(text: 'alice');
-  final _passCtrl = TextEditingController(text: 'password1');
+  final _userCtrl = TextEditingController(text: '');
+  final _passCtrl = TextEditingController(text: '');
   bool _loading = false;
 
   Future<void> _login() async {
@@ -30,12 +30,9 @@ class _LoginPageState extends State<LoginPage> {
       );
 
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
-        final Map<String, dynamic> json = jsonDecode(resp.body);
-        final username = (json['username'] ?? '').toString();
-        final role = (json['role'] ?? '').toString();
-
-        if (username.isNotEmpty) {
-          await AuthStorage().saveUser(username: username, role: role);
+        final token = _extractToken(resp.body);
+        if (token != null && token.isNotEmpty) {
+          await AuthStorage().saveToken(token);
           if (!mounted) return;
           Navigator.of(context).pushAndRemoveUntil(
             MaterialPageRoute(builder: (_) => const AppShell()),
@@ -43,14 +40,33 @@ class _LoginPageState extends State<LoginPage> {
           );
           return;
         }
+        _showError('No token found in response.');
+      } else {
+        _showError('HTTP ${resp.statusCode}: ${resp.body}');
       }
-
-      _showError('Login failed. Unexpected response.');
     } catch (e) {
       _showError('Network error: $e');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  /// Accepts either a raw token string body, or JSON {"token": "..."}.
+  String? _extractToken(String body) {
+    // Try JSON first
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is String) return decoded; // body is a JSON string
+      if (decoded is Map<String, dynamic>) {
+        final v = decoded['token'] ?? decoded['access_token'] ?? decoded['jwt'];
+        if (v is String && v.isNotEmpty) return v;
+      }
+    } catch (_) {
+      // Not JSON — fall through
+    }
+    // Fallback: treat response body as the token itself
+    final trimmed = body.trim();
+    return trimmed.isEmpty ? null : trimmed;
   }
 
   void _showError(String msg) {
@@ -68,7 +84,11 @@ class _LoginPageState extends State<LoginPage> {
             children: [
               TextField(controller: _userCtrl, decoration: const InputDecoration(labelText: 'Username')),
               const SizedBox(height: 12),
-              TextField(controller: _passCtrl, decoration: const InputDecoration(labelText: 'Password'), obscureText: true),
+              TextField(
+                controller: _passCtrl,
+                decoration: const InputDecoration(labelText: 'Password'),
+                obscureText: true,
+              ),
               const SizedBox(height: 24),
               _loading
                   ? const CircularProgressIndicator()

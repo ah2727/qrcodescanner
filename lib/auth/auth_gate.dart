@@ -8,14 +8,18 @@ class AuthGate extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final storage = AuthStorage();
-    return FutureBuilder<bool>(
-      future: storage.isLoggedIn(),
+    final auth = AuthStorage(); // <-- no const
+
+    return FutureBuilder<String?>(
+      future: auth.readToken(), // <-- use the instance
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
         }
-        return (snap.data ?? false) ? const AppShell() : const LoginPage();
+        final hasToken = (snap.data ?? '').isNotEmpty;
+        return hasToken ? const AppShell() : const LoginPage();
       },
     );
   }

@@ -10,7 +10,7 @@ import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../../storage/config_history_store.dart';
-
+import '../../../storage/key_store.dart';
 // Update these imports to match your project structure
 import '../../../common/widgets/qr_scanner_page.dart';
 import '../../../config/api_config.dart';
@@ -32,6 +32,7 @@ class ActivationData {
   String locationName = '';
   bool inputEnable = false;
   bool outputEnable = false;
+  bool isConsumer = false; // Optional, not used by device
 }
 
 Future<void> showActivationSheet({
@@ -82,7 +83,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
   // Connect state
   bool _inEnable = false;
   bool _outEnable = false;
-
+  bool _isConsumer = false;
   // Projects: project -> list of locations
   Map<String, List<_LocItem>> _projects = {};
   bool _loadingProjects = false;
@@ -133,10 +134,9 @@ class _ActivationSheetState extends State<_ActivationSheet>
       _projectsError = null;
     });
     try {
-      final res = await http.post(
+      final res = await http.get(
         ApiConfig.apiUri(ApiConfig.projects),
-        headers: ApiConfig.projectsHeaders(),
-        body: jsonEncode({}), // may be empty per spec
+        headers: await ApiConfig.projectsHeaders(), // ✅ await the map
       );
       if (res.statusCode != 200) {
         if (res.statusCode == 401) {
@@ -174,9 +174,11 @@ class _ActivationSheetState extends State<_ActivationSheet>
       _keysError = null;
     });
     try {
+      final headers = await ApiConfig.jsonHeadersAsync();
+
       final res = await http.post(
         ApiConfig.apiUri(ApiConfig.rsaKey),
-        headers: ApiConfig.jsonHeaders(),
+        headers: headers,
         body: jsonEncode({"serial": widget.data.serialNumber}),
       );
       if (res.statusCode != 200) {
@@ -268,6 +270,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
           'location': widget.data.locationName,
         },
       );
+      await KeyStore.upsertFromConfigPayload(payload);
+
       await widget.service.sendConfig(
         deviceId: widget.data.deviceId,
         payload: payload,
@@ -293,6 +297,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
     "enabled_input": widget.data.inputEnable,
     "enabled_output": widget.data.outputEnable,
     "connection_type": widget.data.connectionType, // Wifi | RS485 | LAN
+    "is_consumer": widget.data.isConsumer, // Optional, not used by device
   };
 
   // -------------------- CFG Save / Read --------------------
@@ -305,6 +310,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
     "enabled_input": widget.data.inputEnable,
     "enabled_output": widget.data.outputEnable,
     "connection_type": widget.data.connectionType,
+    "is_consumer": widget.data.isConsumer, // Optional, not used by device
     "meta": {
       "savedAt": DateTime.now().toIso8601String(),
       // Optional context, not used by device:
@@ -625,14 +631,21 @@ class _ActivationSheetState extends State<_ActivationSheet>
         ),
         const SizedBox(height: 12),
         SwitchListTile(
-          value: _inEnable,
-          onChanged: (v) => setState(() => _inEnable = v),
+          value: widget.data.inputEnable,
+          onChanged: (v) => setState(() => widget.data.inputEnable = v),
           title: const Text('Input Enable'),
         ),
         SwitchListTile(
-          value: _outEnable,
-          onChanged: (v) => setState(() => _outEnable = v),
+          value: widget.data.outputEnable,
+          onChanged: (v) => setState(() => widget.data.outputEnable = v),
           title: const Text('Output Enable'),
+        ),
+        // 👇 New: is_consumer
+        SwitchListTile(
+          value: widget.data.isConsumer,
+          onChanged: (v) => setState(() => widget.data.isConsumer = v),
+          title: const Text('Consumer device'),
+          subtitle: const Text('Send is_consumer flag in configuration'),
         ),
       ],
     );
@@ -652,6 +665,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
       "InputEnable": _inEnable,
       "OutputEnable": _outEnable,
       "ConnectionType": widget.data.connectionType,
+      "isConsumer": _isConsumer,
     };
 
     return ListView(
@@ -667,6 +681,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
         _kv('InputEnable', _inEnable.toString()),
         _kv('OutputEnable', _outEnable.toString()),
         _kv('ConnectionType', widget.data.connectionType),
+        _kv('is consumber', _isConsumer.toString()),
         const SizedBox(height: 12),
 
         Wrap(
@@ -768,36 +783,62 @@ class _ActivationSheetState extends State<_ActivationSheet>
   Map<String, List<_LocItem>> _parseProjects(dynamic decoded) {
     final out = <String, List<_LocItem>>{};
     if (decoded is! Map) return out;
-    final projects = decoded['projects'];
-    if (projects is! Map) return out;
+
+    // Accept both: { projects: {...} } or just {...}
+    final Map projects = decoded['projects'] is Map
+        ? decoded['projects'] as Map
+        : decoded;
 
     for (final entry in projects.entries) {
       final pName = entry.key.toString();
       final pVal = entry.value;
-
       final locs = <_LocItem>[];
 
       if (pVal is Map) {
-        // Case 1: BaseURL map
-        final baseUrlBlock =
-            pVal['BaseURL'] ?? pVal['baseUrl'] ?? pVal['baseURL'];
-        if (baseUrlBlock is Map) {
-          for (final e in baseUrlBlock.entries) {
-            final locName = e.key.toString();
-            final url = e.value?.toString() ?? '';
-            if (_looksLikeUrl(url)) {
-              locs.add(_LocItem(name: locName, baseUrl: url));
+        // Case 4: baseUrlKey -> List<location>
+        // e.g.
+        // "Sharif University": {
+        //   "123.213.452.1:8080": ["loc1","loc2",...]
+        // }
+        for (final e in pVal.entries) {
+          final baseUrlKey = e.key.toString();
+          final v = e.value;
+          if (v is List) {
+            final url = _normalizeUrl(baseUrlKey);
+            if (url != null) {
+              for (final l in v) {
+                final locName = l?.toString() ?? 'Location';
+                locs.add(_LocItem(name: locName, baseUrl: url));
+              }
             }
           }
         }
 
-        // Case 2: direct location->url pairs
+        // Case 1: BaseURL block -> { locName: url }
+        if (locs.isEmpty) {
+          final baseUrlBlock =
+              pVal['BaseURL'] ?? pVal['baseUrl'] ?? pVal['baseURL'];
+          if (baseUrlBlock is Map) {
+            for (final e in baseUrlBlock.entries) {
+              final locName = e.key.toString();
+              final url = _normalizeUrl(e.value?.toString() ?? '');
+              if (url != null) {
+                locs.add(_LocItem(name: locName, baseUrl: url));
+              }
+            }
+          }
+        }
+
+        // Case 2: direct location -> url pairs
         if (locs.isEmpty) {
           for (final e in pVal.entries) {
             final k = e.key.toString();
             final v = e.value;
-            if (v is String && _looksLikeUrl(v)) {
-              locs.add(_LocItem(name: k, baseUrl: v));
+            if (v is String) {
+              final url = _normalizeUrl(v);
+              if (url != null) {
+                locs.add(_LocItem(name: k, baseUrl: url));
+              }
             }
           }
         }
@@ -807,14 +848,15 @@ class _ActivationSheetState extends State<_ActivationSheet>
           final singleBase =
               pVal['BaseURL'] ?? pVal['baseUrl'] ?? pVal['baseURL'];
           final locations = pVal['Locations'] ?? pVal['locations'];
-          if (singleBase is String && _looksLikeUrl(singleBase)) {
+          final url = _normalizeUrl(singleBase?.toString() ?? '');
+          if (url != null) {
             if (locations is List) {
               for (final l in locations) {
                 final locName = l?.toString() ?? 'Location';
-                locs.add(_LocItem(name: locName, baseUrl: singleBase));
+                locs.add(_LocItem(name: locName, baseUrl: url));
               }
             } else {
-              locs.add(_LocItem(name: 'Default', baseUrl: singleBase));
+              locs.add(_LocItem(name: 'Default', baseUrl: url));
             }
           }
         }
@@ -826,6 +868,26 @@ class _ActivationSheetState extends State<_ActivationSheet>
     }
 
     return out;
+  }
+
+  /// Accepts full URLs or host[:port] and normalizes to http://host[:port]
+  String? _normalizeUrl(String s) {
+    final t = s.trim();
+    if (t.isEmpty) return null;
+
+    // If already has scheme, try it.
+    if (t.startsWith('http://') || t.startsWith('https://')) {
+      final uri = Uri.tryParse(t);
+      if (uri != null && (uri.hasAuthority || uri.host.isNotEmpty)) return t;
+    }
+
+    // Otherwise, try prefixing http:// for host[:port] or IP[:port]
+    final withScheme = 'http://$t';
+    final uri = Uri.tryParse(withScheme);
+    if (uri != null && (uri.hasAuthority || uri.host.isNotEmpty))
+      return withScheme;
+
+    return null;
   }
 
   bool _looksLikeUrl(String s) =>
