@@ -12,6 +12,9 @@ class BleScanner extends ChangeNotifier {
   bool _permissionsOk = false;
   BleStatus _status = BleStatus.unknown;
 
+  /// اگر خواستی «unknown»ها را نشان بدهی، این را false کن
+  final bool hideUnknown = true;
+
   BleScanner() {
     _status = _ble.status;
     _ble.statusStream.listen((s) {
@@ -22,9 +25,13 @@ class BleScanner extends ChangeNotifier {
 
   bool get scanning => _scanning;
   BleStatus get status => _status;
+
+  /// لیست مرتب‌شده بر اساس RSSI (unknownها حذف شده‌اند)
   List<DiscoveredDevice> get devices {
-    final list = _devices.values.toList();
-    list.sort((a, b) => (b.rssi ?? 0).compareTo(a.rssi ?? 0));
+    final list = _devices.values
+        .where((d) => !hideUnknown || !_isUnknown(d))
+        .toList()
+      ..sort((a, b) => (b.rssi).compareTo(a.rssi));
     return list;
   }
 
@@ -51,8 +58,12 @@ class BleScanner extends ChangeNotifier {
     _sub = _ble
         .scanForDevices(withServices: const [], scanMode: ScanMode.lowLatency)
         .listen((d) {
-      _devices[d.id] = d; // de-duplicate by ID
-      notifyListeners();
+      // حذف Unknown ها
+      if (!_isUnknown(d)) {
+        _devices[d.id] = d; // de-duplicate by ID
+        notifyListeners();
+      }
+      // نکته: اگر الان unknown بود و بعداً name گرفت، دوباره ایونت می‌آید و اضافه می‌شود.
     }, onError: (e) {
       _scanning = false;
       notifyListeners();
@@ -70,5 +81,21 @@ class BleScanner extends ChangeNotifier {
   void dispose() {
     _sub?.cancel();
     super.dispose();
+  }
+
+  /// تشخیص Unknown بودن دیوایس:
+  /// - name خالی یا فقط فاصله
+  /// - یا برابر با "unknown"/"unknown device"/"n/a"/"null" (حروف کوچک/بزرگ مهم نیست)
+  bool _isUnknown(DiscoveredDevice d) {
+    final n = (d.name).trim();
+    if (n.isEmpty) return true;
+    final lower = n.toLowerCase();
+    if (lower == 'unknown' ||
+        lower == 'unknown device' ||
+        lower == 'n/a' ||
+        lower == 'null') {
+      return true;
+    }
+    return false;
   }
 }

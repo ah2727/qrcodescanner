@@ -54,6 +54,7 @@ class BoardsPage extends StatelessWidget {
               final serial  = (payload?['serial_number'] ?? rec['deviceId'] ?? '-').toString();
               final project = (extra?['project'] ?? '').toString();
               final section = (extra?['location'] ?? '').toString();
+              final connectionType = (extra?['connection_type'] ?? '').toString();
 
 
 
@@ -94,7 +95,7 @@ class BoardsPage extends StatelessWidget {
                       const SizedBox(height: 12),
 
                       // Details block
-
+                      _kv("connection type", connectionType),
                       _kv('Project Base URL', baseUrl),
                       _kv('Created At', created.isEmpty ? '—' : created),
                       if (!ok && error.isNotEmpty) _kv('Error', error),

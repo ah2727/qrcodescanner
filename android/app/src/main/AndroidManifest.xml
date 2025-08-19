@@ -9,6 +9,12 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- برای اندروید 9 و پایین -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <!-- برای اندروید 13 به بالا (اختیاری برای خواندن؛ ذخیره معمولا بدون اجازه هم کار می‌کند) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
     <!-- Pre-Android 12 -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />

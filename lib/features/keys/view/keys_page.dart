@@ -1,13 +1,12 @@
-import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:image_gallery_saver/image_gallery_saver.dart';
 
 import 'package:qrcodescanner/storage/key_store.dart';
 import 'package:qrcodescanner/features/keys/view/key_detail_page.dart';
@@ -60,12 +59,12 @@ class KeysPage extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   child: Row(
                     children: [
-                      // 👇 تپ روی QR => دانلود PNG باکیفیت
+                      // 👇 تپ روی QR => ذخیره PNG در گالری
                       Tooltip(
                         message: 'برای دانلود QR تپ کنید',
                         child: InkWell(
                           borderRadius: BorderRadius.circular(8),
-                          onTap: () => _saveQrPng(context, it.serialNumber, qrData),
+                          onTap: () => _saveQrToGallery(context, it.serialNumber, qrData),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(8),
                             child: SizedBox(
@@ -180,39 +179,55 @@ class KeysPage extends StatelessWidget {
   }
 }
 
-/// ذخیره QR به صورت PNG با کیفیت بالا (1024px) در Documents برنامه
-Future<void> _saveQrPng(BuildContext context, String serial, String data) async {
+/// رندر QR به PNG بایت‌ها (سایز پیش‌فرض: 1024px)
+Future<Uint8List> _renderQrPngBytes(String data, {double size = 1024}) async {
+  final painter = QrPainter(
+    data: data,
+    version: QrVersions.auto,
+    gapless: true,
+    color: const Color(0xFF000000),
+    emptyColor: const Color(0xFFFFFFFF),
+  );
+
+  final ui.Image img = await painter.toImage(size); // size حالا double است
+  final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
+  img.dispose();
+  return byteData!.buffer.asUint8List();
+}
+/// ذخیره در گالری/Photos با نام یکتا
+Future<void> _saveQrToGallery(BuildContext context, String serial, String data) async {
   try {
-    final painter = QrPainter(
-      data: data,
-      version: QrVersions.auto,
-      gapless: true,
-      // رنگ‌ها اختیاری‌اند؛ پیش‌فرض‌ها هم جواب می‌دهند
-      color: const Color(0xFF000000),
-      emptyColor: const Color(0xFFFFFFFF),
-    );
+    final pngBytes = await _renderQrPngBytes(data, size: 1024);
 
-    // رندر باکیفیت (1024px)
-    final ui.Image img = await painter.toImage(1024);
-    final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
-    final bytes = byteData!.buffer.asUint8List();
-
-    final dir = await getApplicationDocumentsDirectory();
     final ts = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
     final safeSerial = (serial.isEmpty ? 'key' : serial).replaceAll(RegExp(r'[^\w\-]+'), '_');
-    final file = File('${dir.path}/qr_${safeSerial}_$ts.png');
+    final name = 'qr_${safeSerial}_$ts';
 
-    await file.writeAsBytes(bytes);
+    final result = await ImageGallerySaver.saveImage(
+      pngBytes,
+      quality: 100,
+      name: name,
+      isReturnImagePathOfIOS: true,
+    );
+
+    final ok = (result is Map && result['isSuccess'] == true);
+    final path = (result is Map)
+        ? (result['filePath'] ?? result['savedFilePath'] ?? result['path'])?.toString()
+        : null;
 
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Saved: ${file.path}')),
+        SnackBar(
+          content: Text(ok
+              ? (path != null ? 'در گالری ذخیره شد:\n$path' : 'در گالری ذخیره شد')
+              : 'ذخیره ناموفق بود'),
+        ),
       );
     }
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Save failed: $e')),
+        SnackBar(content: Text('خطا در ذخیره: $e')),
       );
     }
   }
