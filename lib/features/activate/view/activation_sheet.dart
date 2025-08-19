@@ -264,11 +264,14 @@ class _ActivationSheetState extends State<_ActivationSheet>
     final payload = _buildSendPayload();
 
     try {
+
       await ConfigHistoryStore.add(
         deviceId: widget.data.deviceId,
         baseUrl: widget.data.baseUrl,
         payload: payload,
         success: true,
+        section: widget.data.locationName, // ✅ new
+        connectionType: widget.data.locationName, // ✅ new
         extra: {
           'project': widget.data.projectName,
           'location': widget.data.locationName,

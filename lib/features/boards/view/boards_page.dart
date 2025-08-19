@@ -53,10 +53,10 @@ class BoardsPage extends StatelessWidget {
 
               final serial  = (payload?['serial_number'] ?? rec['deviceId'] ?? '-').toString();
               final project = (extra?['project'] ?? '').toString();
-              final section = (extra?['location'] ?? '').toString();
-              final connectionType = (extra?['connection_type'] ?? '').toString();
+              final section = (extra?['section'] ?? '').toString();
+              final connectionType = (rec?['connectionType'] ?? '').toString();
 
-
+            print(rec);
 
               final baseUrl = (rec['baseUrl'] ?? '-').toString();
               final sentAt  = (rec['sentAt'] ?? '').toString();
