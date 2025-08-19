@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:qrcodescanner/storage/key_store.dart';
+import 'package:provider/provider.dart';
+import 'core/theme/theme_controller.dart';
+import 'package:qrcodescanner/features/profiles/view/profiles_page.dart'; // your page
+import 'auth/auth_service.dart';
 
 import 'app/app_shell.dart';
 import 'auth/auth_gate.dart';
@@ -15,7 +19,17 @@ Future<void> main() async {
     // Use the same generic type everywhere: String OR Map (pick one).
     await Hive.openBox<String>('config_history');
   }
-  runApp(const MyApp());
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeController()),
+        ChangeNotifierProvider(
+          create: (_) => AuthService()..init(),
+        ), // ← makes it available app-wide
+      ],
+      child: const MyApp(),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
