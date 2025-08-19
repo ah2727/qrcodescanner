@@ -1,3 +1,4 @@
+// lib/features/boards/view/boards_page.dart
 import 'dart:convert';
 import 'dart:io';
 
@@ -14,7 +15,7 @@ class BoardsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final Box box = Hive.box<String>('config_history'); // opened in main()
+    final Box<String> box = Hive.box<String>('config_history'); // opened in main()
 
     return Scaffold(
       appBar: AppBar(
@@ -29,7 +30,7 @@ class BoardsPage extends StatelessWidget {
       ),
       body: ValueListenableBuilder(
         valueListenable: box.listenable(),
-        builder: (_, Box<dynamic> b, __) {
+        builder: (_, Box b, __) {
           final rawItems = b.values.toList().reversed.toList(); // newest first
           final items = rawItems
               .map<Map<String, dynamic>>(_normalizeRecord)
@@ -53,10 +54,8 @@ class BoardsPage extends StatelessWidget {
 
               final serial  = (payload?['serial_number'] ?? rec['deviceId'] ?? '-').toString();
               final project = (extra?['project'] ?? '').toString();
-              final section = (rec?['section'] ?? '').toString();
-              final connectionType = (rec?['connectionType'] ?? '').toString();
-
-            print(rec);
+              final section = (rec['section'] ?? '').toString();                // ✅ fixed
+              final connectionType = (rec['connectionType'] ?? '').toString();  // ✅ fixed
 
               final baseUrl = (rec['baseUrl'] ?? '-').toString();
               final sentAt  = (rec['sentAt'] ?? '').toString();
@@ -86,12 +85,23 @@ class BoardsPage extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: 6),
-                      // Section | Project
-           
-                      const SizedBox(height: 12),
+
+                      // Section / Project (optional line)
+                      if (project.isNotEmpty || section.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Text(
+                            [if (section.isNotEmpty) 'Section: $section', if (project.isNotEmpty) 'Project: $project'].join('  •  '),
+                            style: Theme.of(context).textTheme.bodySmall,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+
+                      const SizedBox(height: 4),
 
                       // Details block
-                      _kv("connection type", connectionType),
+                      _kv('Connection type', connectionType),
                       _kv('Project Base URL', baseUrl),
                       _kv('Created At', created.isEmpty ? '—' : created),
                       if (!ok && error.isNotEmpty) _kv('Error', error),
@@ -185,6 +195,7 @@ class BoardsPage extends StatelessWidget {
     }
   }
 }
+
 Widget _kv(String k, String v) {
   return Padding(
     padding: const EdgeInsets.only(bottom: 6),
