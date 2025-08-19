@@ -53,7 +53,7 @@ class BoardsPage extends StatelessWidget {
 
               final serial  = (payload?['serial_number'] ?? rec['deviceId'] ?? '-').toString();
               final project = (extra?['project'] ?? '').toString();
-              final section = (extra?['section'] ?? '').toString();
+              final section = (rec?['section'] ?? '').toString();
               final connectionType = (rec?['connectionType'] ?? '').toString();
 
             print(rec);
@@ -87,11 +87,7 @@ class BoardsPage extends StatelessWidget {
                       ),
                       const SizedBox(height: 6),
                       // Section | Project
-                      Text(
-                        'Section: ${section.isEmpty ? '—' : section}  |  Project: ${project.isEmpty ? '—' : project}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+           
                       const SizedBox(height: 12),
 
                       // Details block
