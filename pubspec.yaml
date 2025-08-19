@@ -47,7 +47,7 @@ dependencies:
   intl: ^0.20.2
   jwt_decoder: ^2.0.1
   dio: ^5.9.0
-  image_gallery_saver: ^2.0.3
+  photo_manager: ^3.7.1
 
 dev_dependencies:
   flutter_test:

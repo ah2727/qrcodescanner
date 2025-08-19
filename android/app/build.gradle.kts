@@ -1,15 +1,3 @@
-
-import java.util.Properties
-import java.io.FileInputStream
-import java.io.File
-
-val keystorePropsFile: File = rootProject.file("key.properties")
-val keystoreProps = Properties().apply {
-    if (keystorePropsFile.exists()) {
-        load(FileInputStream(keystorePropsFile))
-    }
-}
-
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -21,7 +9,6 @@ android {
     namespace = "com.example.qrcodescanner"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = "29.0.13846066"
-
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -48,30 +35,6 @@ android {
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
         }
-    }
-    signingConfigs {
-        create("release") {
-            if (keystorePropsFile.exists()) {
-                // NOTE: Kotlin DSL uses **double quotes** and map-style access
-                storeFile = file(keystoreProps["storeFile"] as String)
-                storePassword = keystoreProps["storePassword"] as String
-                keyAlias = keystoreProps["keyAlias"] as String
-                keyPassword = keystoreProps["keyPassword"] as String
-            }
-        }
-    }
-
-    buildTypes {
-        getByName("release") {
-            // Only hook signing if we actually have the file
-            if (keystorePropsFile.exists()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
-            isMinifyEnabled = false
-            isShrinkResources = false
-            isDebuggable = false
-        }
-        // getByName("debug") { /* as needed */ }
     }
 }
 
