@@ -3,6 +3,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:file_selector/file_selector.dart' as fs;
+import 'package:share_plus/share_plus.dart';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
@@ -199,7 +202,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
       pub = pub?.trim() ?? '';
       priv = priv?.trim() ?? '';
 
-      final privB64 = _pemToBase64(priv ?? '');
+      final privB64 = priv ?? '';
 
       setState(() {
         _pubKeyPem = (pub!.isEmpty) ? null : pub;
@@ -270,8 +273,8 @@ class _ActivationSheetState extends State<_ActivationSheet>
         baseUrl: widget.data.baseUrl,
         payload: payload,
         success: true,
-        section: widget.data.locationName, // ✅ new
-        connectionType: widget.data.locationName, // ✅ new
+        section: _selectedLocation, // ✅ new
+        connectionType: widget.data.connectionType, // ✅ new
         extra: {
           'project': widget.data.projectName,
           'location': widget.data.locationName,
@@ -336,58 +339,80 @@ class _ActivationSheetState extends State<_ActivationSheet>
       "sealCode": widget.data.sealCode,
     },
   };
+Future<void> _saveCfgToFile() async {
+  _collectForm();
 
-  Future<void> _saveCfgToFile() async {
-    _collectForm();
-
-    if (_privKeyBase64 == null || _privKeyBase64!.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Private key is empty. Fetch keys first.'),
-        ),
-      );
-      return;
-    }
-
-    setState(() {
-      _savingCfg = true;
-      _savedCfgPath = null;
-      _savedCfgReloaded = null;
-    });
-
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final name = (widget.data.serialNumber.isNotEmpty)
-          ? 'board_cfg_${widget.data.serialNumber}.json'
-          : 'board_cfg_${DateTime.now().millisecondsSinceEpoch}.json';
-      final file = File('${dir.path}/$name');
-
-      final pretty = const JsonEncoder.withIndent(
-        '  ',
-      ).convert(_buildCfgJson());
-      await file.writeAsString(pretty, flush: true);
-
-      // Read-back to verify
-      final txt = await file.readAsString();
-      final decoded = jsonDecode(txt) as Map<String, dynamic>;
-
-      if (!mounted) return;
-      setState(() {
-        _savedCfgPath = file.path;
-        _savedCfgReloaded = decoded;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('CFG saved & reloaded ✓\n${file.path}')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Save/read CFG failed: $e')));
-    } finally {
-      if (mounted) setState(() => _savingCfg = false);
-    }
+  if (_privKeyBase64 == null || _privKeyBase64!.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Private key is empty. Fetch keys first.')),
+    );
+    return;
   }
+
+  setState(() {
+    _savingCfg = true;
+    _savedCfgPath = null;
+    _savedCfgReloaded = null;
+  });
+
+  try {
+    // Build pretty JSON
+    final pretty = const JsonEncoder.withIndent('  ').convert(_buildCfgJson());
+
+    // Suggest a filename
+    final base = widget.data.serialNumber.isNotEmpty
+        ? 'board_cfg_${widget.data.serialNumber}'
+        : 'board_cfg_${DateTime.now().millisecondsSinceEpoch}';
+    final suggestedName = base.endsWith('.json') ? base : '$base.json';
+
+    String? finalPath;
+
+    // Try native "Save as..." dialog first
+    try {
+      final loc = await fs.getSaveLocation(
+        suggestedName: suggestedName,
+        acceptedTypeGroups: [fs.XTypeGroup(label: 'JSON', extensions: ['json'])],
+      );
+      if (loc != null) {
+        final bytes = Uint8List.fromList(utf8.encode(pretty));
+        final xf = fs.XFile.fromData(bytes,
+            name: suggestedName, mimeType: 'application/json');
+        await xf.saveTo(loc.path);
+        finalPath = loc.path;
+      }
+    } catch (_) {
+      // Missing plugin / platform not supported → fall back below
+    }
+
+    // Fallback: save to app documents dir
+    if (finalPath == null) {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$suggestedName');
+      await file.writeAsString(pretty, flush: true);
+      finalPath = file.path;
+    }
+
+    // Read-back to verify
+    final txt = await File(finalPath).readAsString();
+    final decoded = jsonDecode(txt) as Map<String, dynamic>;
+
+    if (!mounted) return;
+    setState(() {
+      _savedCfgPath = finalPath;
+      _savedCfgReloaded = decoded;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('CFG saved ✓\n$finalPath')),
+    );
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Save/read CFG failed: $e')),
+    );
+  } finally {
+    if (mounted) setState(() => _savingCfg = false);
+  }
+}
 
   // -------------------- UI helpers --------------------
 
@@ -416,14 +441,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
     }
   }
 
-  String _pemToBase64(String pem) {
-    final lines = pem
-        .replaceAll('\r', '')
-        .split('\n')
-        .where((l) => !l.startsWith('-----') && l.trim().isNotEmpty)
-        .toList();
-    return lines.join('');
-  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -871,7 +889,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
           final baseUrlKey = e.key.toString();
           final v = e.value;
           if (v is List) {
-            final url = _normalizeUrl(baseUrlKey);
+            final url = baseUrlKey;
             if (url != null) {
               for (final l in v) {
                 final locName = l?.toString() ?? 'Location';
@@ -888,7 +906,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
           if (baseUrlBlock is Map) {
             for (final e in baseUrlBlock.entries) {
               final locName = e.key.toString();
-              final url = _normalizeUrl(e.value?.toString() ?? '');
+              final url = e.value?.toString() ;
               if (url != null) {
                 locs.add(_LocItem(name: locName, baseUrl: url));
               }
@@ -902,7 +920,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
             final k = e.key.toString();
             final v = e.value;
             if (v is String) {
-              final url = _normalizeUrl(v);
+              final url = v;
               if (url != null) {
                 locs.add(_LocItem(name: k, baseUrl: url));
               }
@@ -915,7 +933,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
           final singleBase =
               pVal['BaseURL'] ?? pVal['baseUrl'] ?? pVal['baseURL'];
           final locations = pVal['Locations'] ?? pVal['locations'];
-          final url = _normalizeUrl(singleBase?.toString() ?? '');
+          final url = singleBase?.toString() ;
           if (url != null) {
             if (locations is List) {
               for (final l in locations) {
@@ -937,37 +955,35 @@ class _ActivationSheetState extends State<_ActivationSheet>
     return out;
   }
 
-  /// Accepts full URLs or host[:port] and normalizes to http://host[:port]
-  String? _normalizeUrl(String s) {
-    final t = s.trim();
-    if (t.isEmpty) return null;
 
-    // If already has scheme, try it.
-    if (t.startsWith('http://') || t.startsWith('https://')) {
-      final uri = Uri.tryParse(t);
-      if (uri != null && (uri.hasAuthority || uri.host.isNotEmpty)) return t;
-    }
-
-    // Otherwise, try prefixing http:// for host[:port] or IP[:port]
-    final withScheme = 'http://$t';
-    final uri = Uri.tryParse(withScheme);
-    if (uri != null && (uri.hasAuthority || uri.host.isNotEmpty))
-      return withScheme;
-
-    return null;
-  }
 
   bool _looksLikeUrl(String s) =>
       s.startsWith('http://') || s.startsWith('https://');
 
-  String? _findBaseUrl(String? project, String? location) {
-    if (project == null || location == null) return null;
-    final locs = _projects[project] ?? [];
-    for (final l in locs) {
-      if (l.name == location) return l.baseUrl;
+String? _findBaseUrl(String? project, String? location) {
+  if (project == null || location == null) return null;
+  final locs = _projects[project] ?? [];
+
+  for (final l in locs) {
+    if (l.name == location) {
+      final raw = l.baseUrl?.toString().trim();
+      if (raw == null || raw.isEmpty) return null;
+
+      // remove http(s):// at start, keep everything else
+      var cleaned = raw.replaceFirst(
+        RegExp(r'^\s*https?:\/\/', caseSensitive: false),
+        '',
+      );
+
+      // optional: also remove trailing slashes for consistency
+      cleaned = cleaned.replaceFirst(RegExp(r'/+$'), '');
+
+      return cleaned;
     }
-    return null;
   }
+  return null;
+}
+
 
   Widget _kv(String k, String v) {
     return Padding(

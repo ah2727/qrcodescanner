@@ -48,6 +48,8 @@ dependencies:
   jwt_decoder: ^2.0.1
   dio: ^5.9.0
   photo_manager: ^3.7.1
+  file_selector: ^1.0.3
+  share_plus: ^11.1.0
 
 dev_dependencies:
   flutter_test:

@@ -8,6 +8,9 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/theme_controller.dart';
+import 'package:file_selector/file_selector.dart' as fs;
+import 'dart:typed_data';
+import 'package:share_plus/share_plus.dart';
 
 class BoardsPage extends StatelessWidget {
   const BoardsPage({super.key});
@@ -163,37 +166,80 @@ class BoardsPage extends StatelessWidget {
     }
   }
 
-  static Future<void> _downloadCfg(
-    BuildContext context,
-    String serial,
-    Map<String, dynamic> payload,
-  ) async {
+static Future<void> _downloadCfg(
+  BuildContext context,
+  String serial,
+  Map<String, dynamic> payload,
+) async {
+  try {
+    // Pretty JSON
+    const encoder = JsonEncoder.withIndent('  ');
+    final jsonStr = encoder.convert(payload);
+
+    // Suggested file name
+    final safeSerial = serial.isEmpty ? 'device' : serial;
+    final ts = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+    final suggestedName = 'config_${safeSerial}_$ts.json';
+
+    // 1) Try native "Save as..." dialog (file_selector)
     try {
-      // Pretty JSON
-      const encoder = JsonEncoder.withIndent('  ');
-      final jsonStr = encoder.convert(payload);
+      final location = await fs.getSaveLocation(
+        suggestedName: suggestedName,
+        acceptedTypeGroups: [fs.XTypeGroup(label: 'JSON', extensions: ['json'])],
+      );
 
-      // Save to app documents
-      final dir = await getApplicationDocumentsDirectory();
-      final safeSerial = serial.isEmpty ? 'device' : serial;
-      final ts = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-      final file = File('${dir.path}/config_${safeSerial}_$ts.json');
+      if (location != null) {
+        final bytes = Uint8List.fromList(utf8.encode(jsonStr));
+        final xf = fs.XFile.fromData(bytes, name: suggestedName, mimeType: 'application/json');
+        await xf.saveTo(location.path);
 
-      await file.writeAsString(jsonStr);
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Saved: ${file.path}')),
-        );
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Saved: ${location.path}')),
+          );
+        }
+        return; // done
+      } else {
+        // user canceled — just inform & exit
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Canceled')),
+          );
+        }
+        return;
       }
     } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Save failed: $e')),
-        );
-      }
+      // MissingPlugin/Unimplemented? fall through to fallback
+    }
+
+    // 2) Fallback: save to app documents and open share sheet
+    final dir = await getApplicationDocumentsDirectory();
+    final file = File('${dir.path}/$suggestedName');
+    await file.writeAsString(jsonStr);
+
+    // optional share so user can pick destination (Files/Drive/etc.)
+    try {
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'application/json', name: suggestedName)],
+        text: 'Configuration file',
+      );
+    } catch (_) {}
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved to app documents: ${file.path}')),
+      );
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Save failed: $e')),
+      );
     }
   }
+}
+
+
 }
 
 Widget _kv(String k, String v) {
