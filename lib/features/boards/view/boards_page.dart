@@ -172,30 +172,45 @@ static Future<void> _downloadCfg(
   Map<String, dynamic> payload,
 ) async {
   try {
-    // Pretty JSON
+    // Pretty JSON (content stays JSON; extension will be .cfg)
     const encoder = JsonEncoder.withIndent('  ');
     final jsonStr = encoder.convert(payload);
 
-    // Suggested file name
+    // Suggested file name (.cfg)
     final safeSerial = serial.isEmpty ? 'device' : serial;
     final ts = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-    final suggestedName = 'config_${safeSerial}_$ts.json';
+    final suggestedName = 'config_${safeSerial}_$ts.cfg';
+
+    // helper: force .cfg extension on any chosen path
+    String _forceCfgExt(String path) {
+      final lastSep = path.lastIndexOf(RegExp(r'[\/\\]'));
+      final lastDot = path.lastIndexOf('.');
+      final hasExt = lastDot > lastSep;
+      final base = hasExt ? path.substring(0, lastDot) : path;
+      return '$base.cfg';
+    }
 
     // 1) Try native "Save as..." dialog (file_selector)
     try {
       final location = await fs.getSaveLocation(
         suggestedName: suggestedName,
-        acceptedTypeGroups: [fs.XTypeGroup(label: 'JSON', extensions: ['json'])],
+        acceptedTypeGroups: [fs.XTypeGroup(label: 'CFG', extensions: ['cfg'])],
       );
 
       if (location != null) {
         final bytes = Uint8List.fromList(utf8.encode(jsonStr));
-        final xf = fs.XFile.fromData(bytes, name: suggestedName, mimeType: 'application/json');
-        await xf.saveTo(location.path);
+        final xf = fs.XFile.fromData(
+          bytes,
+          name: suggestedName,
+          // content is JSON, but file extension is .cfg
+          mimeType: 'text/plain',
+        );
+        final targetPath = _forceCfgExt(location.path);
+        await xf.saveTo(targetPath);
 
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Saved: ${location.path}')),
+            SnackBar(content: Text('Saved: $targetPath')),
           );
         }
         return; // done
@@ -212,7 +227,7 @@ static Future<void> _downloadCfg(
       // MissingPlugin/Unimplemented? fall through to fallback
     }
 
-    // 2) Fallback: save to app documents and open share sheet
+    // 2) Fallback: save to app documents and open share sheet (.cfg)
     final dir = await getApplicationDocumentsDirectory();
     final file = File('${dir.path}/$suggestedName');
     await file.writeAsString(jsonStr);
@@ -220,7 +235,7 @@ static Future<void> _downloadCfg(
     // optional share so user can pick destination (Files/Drive/etc.)
     try {
       await Share.shareXFiles(
-        [XFile(file.path, mimeType: 'application/json', name: suggestedName)],
+        [XFile(file.path, mimeType: 'text/plain', name: suggestedName)],
         text: 'Configuration file',
       );
     } catch (_) {}

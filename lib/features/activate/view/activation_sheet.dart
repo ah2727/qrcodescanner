@@ -24,7 +24,7 @@ class ActivationData {
   // Tab 1 (Activate)
   String sealCode = '';
   String serialNumber = '';
-
+  String modelName = '';
   // Tab 2 (Place)
   String project = '';
   String place = '';
@@ -82,7 +82,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
   // Activate ctrls
   final _sealCtrl = TextEditingController();
   final _serialCtrl = TextEditingController();
-
+  final _modelCtrl = TextEditingController(); // optional, not sent to device
   // Place ctrls
   final _baseUrlCtrl = TextEditingController(); // manual override if needed
   String? _selectedProject;
@@ -268,7 +268,6 @@ class _ActivationSheetState extends State<_ActivationSheet>
     final payload = _buildSendPayload();
 
     try {
-
       await ConfigHistoryStore.add(
         deviceId: widget.data.deviceId,
         baseUrl: widget.data.baseUrl,
@@ -313,10 +312,10 @@ class _ActivationSheetState extends State<_ActivationSheet>
     "serial_number": widget.data.serialNumber,
     "private_key": _privKeyBase64, // from API (PEM stripped to base64)
     "base_url": widget.data.baseUrl,
-    "enabled_input": widget.data.inputEnable,
-    "enabled_output": widget.data.outputEnable,
+    "enabled_input": widget.data.inputEnable == true ? 1 : 0,
+    "enabled_output": widget.data.outputEnable == true ? 1 : 0,
     "connection_type": widget.data.connectionType, // Wifi | RS485 | LAN
-    "is_consumer": widget.data.isConsumer, // Optional, not used by device
+    "is_consumer": widget.data.isConsumer == true ? 1 : 0,
     "wifi_name": widget.data.wifiName, // only if Wifi
     "wifi_pass": widget.data.wifiPass, // only if Wifi
     "source": 0,
@@ -326,195 +325,211 @@ class _ActivationSheetState extends State<_ActivationSheet>
 
   Map<String, dynamic> _buildCfgJson() => {
     // Minimal cfg mirrors the device payload (plus optional meta)
-    "serial_number": widget.data.serialNumber,
+    "serial": widget.data.serialNumber,
     "public_key": _pubKeyPem,
     "base_url": widget.data.baseUrl,
-    "enabled_input": widget.data.inputEnable,
-    "enabled_output": widget.data.outputEnable,
+    "enabled_input": widget.data.inputEnable == true ? 1 : 0,
+    "enabled_output": widget.data.outputEnable == true ? 1 : 0,
     "connection_type": widget.data.connectionType,
     "source": 0,
-    "is_consumer": widget.data.isConsumer, // Optional, not used by device
-    "meta": {
-      "savedAt": DateTime.now().toIso8601String(),
-      // Optional context, not used by device:
-      "project": widget.data.project,
-      "place": widget.data.place,
-      "sealCode": widget.data.sealCode,
-    },
+    "model": widget.data.modelName,
+    "is_consumer": widget.data.isConsumer == true
+        ? 1
+        : 0, // Optional, not used by device
+    "created_at": DateTime.now().toIso8601String().split('T').first,
+    // Optional context, not used by device:
+    "project": widget.data.project,
+    "section": widget.data.place,
+    "sealCode": widget.data.sealCode,
   };
-Future<void> _saveCfgToFile() async {
-  _collectForm();
+  Future<void> _saveCfgToFile() async {
+    _collectForm();
 
-  if (_pubKeyPem == null || _pubKeyPem!.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Private key is empty. Fetch keys first.')),
-    );
-    return;
-  }
-
-  setState(() {
-    _savingCfg = true;
-    _savedCfgPath = null;
-    _savedCfgReloaded = null;
-  });
-
-  // helper: force .cfg extension (no Platform dependency)
-  String _forceCfgExt(String path) {
-    final lastSep = path.lastIndexOf(RegExp(r'[\/\\]'));
-    final lastDot = path.lastIndexOf('.');
-    final hasExt = lastDot > lastSep;
-    final base = hasExt ? path.substring(0, lastDot) : path;
-    return '$base.cfg';
-  }
-
-  try {
-    // 1) Build pretty JSON (content stays JSON; only extension will be .cfg)
-    final pretty = const JsonEncoder.withIndent('  ').convert(_buildCfgJson());
-
-    // 2) Suggested filename (ensure .cfg)
-    final base = widget.data.serialNumber.isNotEmpty
-        ? 'board_cfg_${widget.data.serialNumber}'
-        : 'board_cfg_${DateTime.now().millisecondsSinceEpoch}';
-    final suggestedName = base.endsWith('.cfg') ? base : '$base.cfg';
-
-    String? finalPath;
-
-    // 3) Try native “Save as...”
-    try {
-      final loc = await fs.getSaveLocation(
-        suggestedName: suggestedName,
-        acceptedTypeGroups: [fs.XTypeGroup(label: 'CFG', extensions: ['cfg'])],
-      );
-      if (loc != null) {
-        final bytes = Uint8List.fromList(utf8.encode(pretty));
-        final xf = fs.XFile.fromData(
-          bytes,
-          name: suggestedName,
-          mimeType: 'text/plain', // content is JSON, extension is .cfg
-        );
-        final targetPath = _forceCfgExt(loc.path); // ✅ enforce .cfg
-        await xf.saveTo(targetPath);
-        finalPath = targetPath;
-      }
-    } catch (_) {
-      // Missing plugin / platform not supported → fall back
-    }
-
-    // 4) Fallback: save to app documents dir (with .cfg)
-    if (finalPath == null) {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$suggestedName');
-      await file.writeAsString(pretty, flush: true);
-      finalPath = file.path;
-    }
-
-    // 5) Verify by read-back (still JSON even if .cfg)
-    final txt = await File(finalPath).readAsString();
-    final decoded = jsonDecode(txt) as Map<String, dynamic>;
-
-    if (!mounted) return;
-    setState(() {
-      _savedCfgPath = finalPath;
-      _savedCfgReloaded = decoded;
-    });
-
-    // 6) Show “Saved” sheet with actions
-    if (mounted) {
-      await _showSavedSheet(context, finalPath);
-    }
-  } catch (e) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Save/read CFG failed: $e')),
-    );
-  } finally {
-    if (mounted) setState(() => _savingCfg = false);
-  }
-}
-
-Future<void> _showSavedSheet(BuildContext context, String path) async {
-  await showModalBottomSheet(
-    context: context,
-    shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-    ),
-    builder: (ctx) {
-      final fileName = path.split(Platform.pathSeparator).last;
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: const [
-                Icon(Icons.check_circle, color: Colors.green),
-                SizedBox(width: 8),
-                Text('Config saved', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(fileName, style: const TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 4),
-            SelectableText(
-              path,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () async {
-                      final res = await OpenFilex.open(path);
-                      if (res.type != ResultType.done && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Could not open file (${res.message})')),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.open_in_new),
-                    label: const Text('Open'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      await Clipboard.setData(ClipboardData(text: path));
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Path copied')),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.copy),
-                    label: const Text('Copy path'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      try {
-                        await Share.shareXFiles(
-                          [XFile(path, mimeType: 'application/json')],
-                          text: 'Configuration file',
-                        );
-                      } catch (_) {}
-                    },
-                    icon: const Icon(Icons.share),
-                    label: const Text('Share'),
-                  ),
-                ),
-              ],
-            ),
-          ],
+    if (_pubKeyPem == null || _pubKeyPem!.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Private key is empty. Fetch keys first.'),
         ),
       );
-    },
-  );
-}
+      return;
+    }
+
+    setState(() {
+      _savingCfg = true;
+      _savedCfgPath = null;
+      _savedCfgReloaded = null;
+    });
+
+    // helper: force .cfg extension (no Platform dependency)
+    String _forceCfgExt(String path) {
+      final lastSep = path.lastIndexOf(RegExp(r'[\/\\]'));
+      final lastDot = path.lastIndexOf('.');
+      final hasExt = lastDot > lastSep;
+      final base = hasExt ? path.substring(0, lastDot) : path;
+      return '$base.cfg';
+    }
+
+    try {
+      // 1) Build pretty JSON (content stays JSON; only extension will be .cfg)
+      final pretty = const JsonEncoder.withIndent(
+        '  ',
+      ).convert(_buildCfgJson());
+
+      // 2) Suggested filename (ensure .cfg)
+      final base = widget.data.serialNumber.isNotEmpty
+          ? 'board_cfg_${widget.data.serialNumber}'
+          : 'board_cfg_${DateTime.now().millisecondsSinceEpoch}';
+      final suggestedName = base.endsWith('.cfg') ? base : '$base.cfg';
+
+      String? finalPath;
+
+      // 3) Try native “Save as...”
+      try {
+        final loc = await fs.getSaveLocation(
+          suggestedName: suggestedName,
+          acceptedTypeGroups: [
+            fs.XTypeGroup(label: 'CFG', extensions: ['cfg']),
+          ],
+        );
+        if (loc != null) {
+          final bytes = Uint8List.fromList(utf8.encode(pretty));
+          final xf = fs.XFile.fromData(
+            bytes,
+            name: suggestedName,
+            mimeType: 'text/plain', // content is JSON, extension is .cfg
+          );
+          final targetPath = _forceCfgExt(loc.path); // ✅ enforce .cfg
+          await xf.saveTo(targetPath);
+          finalPath = targetPath;
+        }
+      } catch (_) {
+        // Missing plugin / platform not supported → fall back
+      }
+
+      // 4) Fallback: save to app documents dir (with .cfg)
+      if (finalPath == null) {
+        final dir = await getApplicationDocumentsDirectory();
+        final file = File('${dir.path}/$suggestedName');
+        await file.writeAsString(pretty, flush: true);
+        finalPath = file.path;
+      }
+
+      // 5) Verify by read-back (still JSON even if .cfg)
+      final txt = await File(finalPath).readAsString();
+      final decoded = jsonDecode(txt) as Map<String, dynamic>;
+
+      if (!mounted) return;
+      setState(() {
+        _savedCfgPath = finalPath;
+        _savedCfgReloaded = decoded;
+      });
+
+      // 6) Show “Saved” sheet with actions
+      if (mounted) {
+        await _showSavedSheet(context, finalPath);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Save/read CFG failed: $e')));
+    } finally {
+      if (mounted) setState(() => _savingCfg = false);
+    }
+  }
+
+  Future<void> _showSavedSheet(BuildContext context, String path) async {
+    await showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        final fileName = path.split(Platform.pathSeparator).last;
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: const [
+                  Icon(Icons.check_circle, color: Colors.green),
+                  SizedBox(width: 8),
+                  Text(
+                    'Config saved',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                fileName,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              SelectableText(
+                path,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () async {
+                        final res = await OpenFilex.open(path);
+                        if (res.type != ResultType.done && context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Could not open file (${res.message})',
+                              ),
+                            ),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.open_in_new),
+                      label: const Text('Open'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        await Clipboard.setData(ClipboardData(text: path));
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Path copied')),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.copy),
+                      label: const Text('Copy path'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        try {
+                          await Share.shareXFiles([
+                            XFile(path, mimeType: 'application/json'),
+                          ], text: 'Configuration file');
+                        } catch (_) {}
+                      },
+                      icon: const Icon(Icons.share),
+                      label: const Text('Share'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
   // -------------------- UI helpers --------------------
 
@@ -522,6 +537,7 @@ Future<void> _showSavedSheet(BuildContext context, String path) async {
     widget.data
       ..sealCode = _sealCtrl.text.trim()
       ..serialNumber = _serialCtrl.text.trim()
+      ..modelName = _modelCtrl.text.trim()
       ..project = _selectedProject ?? ''
       ..place = _selectedLocation ?? ''
       ..baseUrl = _baseUrlCtrl.text.trim()
@@ -542,8 +558,6 @@ Future<void> _showSavedSheet(BuildContext context, String path) async {
       setState(() => controller.text = code);
     }
   }
-
-
 
   @override
   Widget build(BuildContext context) {
@@ -651,6 +665,16 @@ Future<void> _showSavedSheet(BuildContext context, String path) async {
             suffixIcon: IconButton(
               icon: const Icon(Icons.qr_code_scanner),
               onPressed: () => _scanTo(_sealCtrl, 'Scan Seal QR'),
+            ),
+          ),
+        ),
+        TextField(
+          controller: _modelCtrl,
+          decoration: InputDecoration(
+            labelText: 'model',
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.qr_code_scanner),
+              onPressed: () => _scanTo(_modelCtrl, 'Scan  model'),
             ),
           ),
         ),
@@ -1008,7 +1032,7 @@ Future<void> _showSavedSheet(BuildContext context, String path) async {
           if (baseUrlBlock is Map) {
             for (final e in baseUrlBlock.entries) {
               final locName = e.key.toString();
-              final url = e.value?.toString() ;
+              final url = e.value?.toString();
               if (url != null) {
                 locs.add(_LocItem(name: locName, baseUrl: url));
               }
@@ -1035,7 +1059,7 @@ Future<void> _showSavedSheet(BuildContext context, String path) async {
           final singleBase =
               pVal['BaseURL'] ?? pVal['baseUrl'] ?? pVal['baseURL'];
           final locations = pVal['Locations'] ?? pVal['locations'];
-          final url = singleBase?.toString() ;
+          final url = singleBase?.toString();
           if (url != null) {
             if (locations is List) {
               for (final l in locations) {
@@ -1057,35 +1081,32 @@ Future<void> _showSavedSheet(BuildContext context, String path) async {
     return out;
   }
 
-
-
   bool _looksLikeUrl(String s) =>
       s.startsWith('http://') || s.startsWith('https://');
 
-String? _findBaseUrl(String? project, String? location) {
-  if (project == null || location == null) return null;
-  final locs = _projects[project] ?? [];
+  String? _findBaseUrl(String? project, String? location) {
+    if (project == null || location == null) return null;
+    final locs = _projects[project] ?? [];
 
-  for (final l in locs) {
-    if (l.name == location) {
-      final raw = l.baseUrl?.toString().trim();
-      if (raw == null || raw.isEmpty) return null;
+    for (final l in locs) {
+      if (l.name == location) {
+        final raw = l.baseUrl?.toString().trim();
+        if (raw == null || raw.isEmpty) return null;
 
-      // remove http(s):// at start, keep everything else
-      var cleaned = raw.replaceFirst(
-        RegExp(r'^\s*https?:\/\/', caseSensitive: false),
-        '',
-      );
+        // remove http(s):// at start, keep everything else
+        var cleaned = raw.replaceFirst(
+          RegExp(r'^\s*https?:\/\/', caseSensitive: false),
+          '',
+        );
 
-      // optional: also remove trailing slashes for consistency
-      cleaned = cleaned.replaceFirst(RegExp(r'/+$'), '');
+        // optional: also remove trailing slashes for consistency
+        cleaned = cleaned.replaceFirst(RegExp(r'/+$'), '');
 
-      return cleaned;
+        return cleaned;
+      }
     }
+    return null;
   }
-  return null;
-}
-
 
   Widget _kv(String k, String v) {
     return Padding(
