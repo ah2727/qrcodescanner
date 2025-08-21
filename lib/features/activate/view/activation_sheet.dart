@@ -2,9 +2,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-
 import 'package:file_selector/file_selector.dart' as fs;
+import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:flutter/services.dart';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -28,7 +29,7 @@ class ActivationData {
   String project = '';
   String place = '';
   String baseUrl = '';
-  String connectionType = 'Wifi'; // Wifi | RS485 | LAN
+  String connectionType = 'wifi'; // Wifi | RS485 | LAN
   String projectName = "";
   // Tab 3 (Connect)
   String deviceId = '';
@@ -355,36 +356,49 @@ Future<void> _saveCfgToFile() async {
     _savedCfgReloaded = null;
   });
 
+  // helper: force .cfg extension (no Platform dependency)
+  String _forceCfgExt(String path) {
+    final lastSep = path.lastIndexOf(RegExp(r'[\/\\]'));
+    final lastDot = path.lastIndexOf('.');
+    final hasExt = lastDot > lastSep;
+    final base = hasExt ? path.substring(0, lastDot) : path;
+    return '$base.cfg';
+  }
+
   try {
-    // Build pretty JSON
+    // 1) Build pretty JSON (content stays JSON; only extension will be .cfg)
     final pretty = const JsonEncoder.withIndent('  ').convert(_buildCfgJson());
 
-    // Suggest a filename
+    // 2) Suggested filename (ensure .cfg)
     final base = widget.data.serialNumber.isNotEmpty
         ? 'board_cfg_${widget.data.serialNumber}'
         : 'board_cfg_${DateTime.now().millisecondsSinceEpoch}';
-    final suggestedName = base.endsWith('.json') ? base : '$base.json';
+    final suggestedName = base.endsWith('.cfg') ? base : '$base.cfg';
 
     String? finalPath;
 
-    // Try native "Save as..." dialog first
+    // 3) Try native “Save as...”
     try {
       final loc = await fs.getSaveLocation(
         suggestedName: suggestedName,
-        acceptedTypeGroups: [fs.XTypeGroup(label: 'JSON', extensions: ['json'])],
+        acceptedTypeGroups: [fs.XTypeGroup(label: 'CFG', extensions: ['cfg'])],
       );
       if (loc != null) {
         final bytes = Uint8List.fromList(utf8.encode(pretty));
-        final xf = fs.XFile.fromData(bytes,
-            name: suggestedName, mimeType: 'application/json');
-        await xf.saveTo(loc.path);
-        finalPath = loc.path;
+        final xf = fs.XFile.fromData(
+          bytes,
+          name: suggestedName,
+          mimeType: 'text/plain', // content is JSON, extension is .cfg
+        );
+        final targetPath = _forceCfgExt(loc.path); // ✅ enforce .cfg
+        await xf.saveTo(targetPath);
+        finalPath = targetPath;
       }
     } catch (_) {
-      // Missing plugin / platform not supported → fall back below
+      // Missing plugin / platform not supported → fall back
     }
 
-    // Fallback: save to app documents dir
+    // 4) Fallback: save to app documents dir (with .cfg)
     if (finalPath == null) {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/$suggestedName');
@@ -392,7 +406,7 @@ Future<void> _saveCfgToFile() async {
       finalPath = file.path;
     }
 
-    // Read-back to verify
+    // 5) Verify by read-back (still JSON even if .cfg)
     final txt = await File(finalPath).readAsString();
     final decoded = jsonDecode(txt) as Map<String, dynamic>;
 
@@ -401,9 +415,11 @@ Future<void> _saveCfgToFile() async {
       _savedCfgPath = finalPath;
       _savedCfgReloaded = decoded;
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('CFG saved ✓\n$finalPath')),
-    );
+
+    // 6) Show “Saved” sheet with actions
+    if (mounted) {
+      await _showSavedSheet(context, finalPath);
+    }
   } catch (e) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -412,6 +428,90 @@ Future<void> _saveCfgToFile() async {
   } finally {
     if (mounted) setState(() => _savingCfg = false);
   }
+}
+
+Future<void> _showSavedSheet(BuildContext context, String path) async {
+  await showModalBottomSheet(
+    context: context,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+    ),
+    builder: (ctx) {
+      final fileName = path.split(Platform.pathSeparator).last;
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: const [
+                Icon(Icons.check_circle, color: Colors.green),
+                SizedBox(width: 8),
+                Text('Config saved', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(fileName, style: const TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            SelectableText(
+              path,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      final res = await OpenFilex.open(path);
+                      if (res.type != ResultType.done && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Could not open file (${res.message})')),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.open_in_new),
+                    label: const Text('Open'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: path));
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Path copied')),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.copy),
+                    label: const Text('Copy path'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () async {
+                      try {
+                        await Share.shareXFiles(
+                          [XFile(path, mimeType: 'application/json')],
+                          text: 'Configuration file',
+                        );
+                      } catch (_) {}
+                    },
+                    icon: const Icon(Icons.share),
+                    label: const Text('Share'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+    },
+  );
 }
 
   // -------------------- UI helpers --------------------
@@ -632,7 +732,7 @@ Future<void> _saveCfgToFile() async {
   }
 
   Widget _tabConnect() {
-    final isWifi = widget.data.connectionType == 'Wifi';
+    final isWifi = widget.data.connectionType == 'wifi';
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -660,9 +760,9 @@ Future<void> _saveCfgToFile() async {
         DropdownButtonFormField<String>(
           value: widget.data.connectionType,
           items: const [
-            DropdownMenuItem(value: 'Wifi', child: Text('Wifi')),
-            DropdownMenuItem(value: 'RS485', child: Text('RS485')),
-            DropdownMenuItem(value: 'LAN', child: Text('LAN')),
+            DropdownMenuItem(value: 'wifi', child: Text('wifi')),
+            DropdownMenuItem(value: 'rs485', child: Text('rs485')),
+            DropdownMenuItem(value: 'lan', child: Text('lan')),
           ],
           onChanged: (v) => setState(() {
             widget.data.connectionType = v ?? 'Wifi';
