@@ -319,6 +319,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
     "is_consumer": widget.data.isConsumer, // Optional, not used by device
     "wifi_name": widget.data.wifiName, // only if Wifi
     "wifi_pass": widget.data.wifiPass, // only if Wifi
+    "source": 0,
   };
 
   // -------------------- CFG Save / Read --------------------
@@ -326,11 +327,12 @@ class _ActivationSheetState extends State<_ActivationSheet>
   Map<String, dynamic> _buildCfgJson() => {
     // Minimal cfg mirrors the device payload (plus optional meta)
     "serial_number": widget.data.serialNumber,
-    "private_key": _privKeyBase64,
+    "public_key": _pubKeyPem,
     "base_url": widget.data.baseUrl,
     "enabled_input": widget.data.inputEnable,
     "enabled_output": widget.data.outputEnable,
     "connection_type": widget.data.connectionType,
+    "source": 0,
     "is_consumer": widget.data.isConsumer, // Optional, not used by device
     "meta": {
       "savedAt": DateTime.now().toIso8601String(),
@@ -343,7 +345,7 @@ class _ActivationSheetState extends State<_ActivationSheet>
 Future<void> _saveCfgToFile() async {
   _collectForm();
 
-  if (_privKeyBase64 == null || _privKeyBase64!.isEmpty) {
+  if (_pubKeyPem == null || _pubKeyPem!.isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Private key is empty. Fetch keys first.')),
     );
