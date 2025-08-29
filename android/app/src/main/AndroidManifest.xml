@@ -25,7 +25,7 @@
         android:maxSdkVersion="30" />
 
     <application
-        android:label="qrcodescanner"
+        android:label="Dayan boards"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

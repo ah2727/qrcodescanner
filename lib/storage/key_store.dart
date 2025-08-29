@@ -77,7 +77,7 @@ class KeyStore {
     final created = <KeyRecord>[];
     for (var i = 0; i < count; i++) {
       final serial = _uniqueSerial6();
-      final qr = jsonEncode({'serial_number': serial});
+      final qr = serial;
 
       final recMap = {
         'id': serial,                // پایدار و معنادار

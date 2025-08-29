@@ -184,7 +184,7 @@ class KeysPage extends StatelessWidget {
 
               final qrData = it.qrData.isNotEmpty
                   ? it.qrData
-                  : '{"serial_number":"${it.serialNumber}"}';
+                  : it.serialNumber;
 
               return Card(
                 margin: EdgeInsets.zero,
